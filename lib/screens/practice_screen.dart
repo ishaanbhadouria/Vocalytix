@@ -1818,7 +1818,7 @@ $fillerTs
                       crossAxisSpacing: 12,
                       mainAxisSpacing: 12,
                       childAspectRatio: childAspectRatio,
-                      physics: const NeverScrollableScrollPhysics(),
+                      physics: const ClampingScrollPhysics(),
                       children: CoachingMode.values.map((mode) {
                     final selected = selectedMode == mode;
                     return InkWell(
