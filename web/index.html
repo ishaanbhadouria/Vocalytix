@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Vocalytix</title>
+</head>
+
+<body>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+  <script>
+    let recognition;
+    let faceMesh;
+    let camera;
+    let videoElement;
+    let faceTrackingActive = false;
+    let previousNose = null;
+    let mediaRecorder;
+    let recordedChunks = [];
+    let recordingRequested = false;
+    let recordingElementId = null;
+    let recordingStartedAtMs = 0;
+    let extraAudioStream = null;
+    let cameraPermissionGranted = false;
+    let micPermissionGranted = false;
+
+    let totalFrames = 0;
+    let faceFrames = 0;
+    let lookingAwayFrames = 0;
+    let movementAccum = 0;
+    let gestureFrames = 0;
+
+    function resetFaceStats() {
+      totalFrames = 0;
+      faceFrames = 0;
+      lookingAwayFrames = 0;
+      movementAccum = 0;
+      gestureFrames = 0;
+      previousNose = null;
+    }
+
+    function sendFaceUpdate(faceDetected) {
+      const facePresencePct = totalFrames > 0
+        ? (faceFrames / totalFrames) * 100
+        : 0;
+      const eyeContactPct = faceFrames > 0
+        ? (1 - (lookingAwayFrames / faceFrames)) * 100
+        : 0;
+      const avgMovement = faceFrames > 1
+        ? movementAccum / (faceFrames - 1)
+        : 0;
+
+      const headStabilityPct = Math.max(
+        0,
+        Math.min(100, 100 - (avgMovement * 5000))
+      );
+      const gestureActivityPct = Math.max(
+        0,
+        Math.min(100, avgMovement * 3200)
+      );
+
+      const payload = {
+        faceDetected,
+        facePresencePct,
+        eyeContactPct,
+        headStabilityPct,
+        gestureActivityPct,
+        gestureFrames
+      };
+
+      window.dispatchEvent(
+        new CustomEvent("face-update", { detail: JSON.stringify(payload) })
+      );
+    }
+
+    window.startSpeech = function () {
+      const SpeechRecognition =
+        window.SpeechRecognition || window.webkitSpeechRecognition;
+
+      if (!SpeechRecognition) {
+        alert("Speech Recognition not supported in this browser.");
+        return;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onresult = function (event) {
+        const chunks = [];
+        for (let i = 0; i < event.results.length; i++) {
+          const result = event.results[i];
+          let chunk = (result[0].transcript || "").trim();
+          if (!chunk) continue;
+
+          if (result.isFinal) {
+            if (!/[.!?]$/.test(chunk)) {
+              chunk += ".";
+            }
+            chunk = chunk.charAt(0).toUpperCase() + chunk.slice(1);
+          }
+
+          chunks.push(chunk);
+        }
+
+        const transcript = chunks
+          .join(" ")
+          .replace(/\s+([,.!?])/g, "$1")
+          .replace(/\s{2,}/g, " ")
+          .trim();
+
+        window.dispatchEvent(
+          new CustomEvent("speech-update", {
+            detail: transcript,
+          })
+        );
+      };
+
+      recognition.onend = function () {
+        window.dispatchEvent(new Event("speech-stopped"));
+      };
+
+      recognition.start();
+    };
+
+    window.stopSpeech = function () {
+      if (recognition) {
+        recognition.stop();
+      }
+    };
+
+    async function ensureMicPermission() {
+      if (micPermissionGranted && extraAudioStream && extraAudioStream.getAudioTracks().length > 0) {
+        return true;
+      }
+      try {
+        extraAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        micPermissionGranted = true;
+        return true;
+      } catch (_) {
+        micPermissionGranted = false;
+        window.dispatchEvent(
+          new CustomEvent("face-error", {
+            detail: "Microphone permission is required for recording."
+          })
+        );
+        return false;
+      }
+    }
+
+    async function beginRecordingFromElement(target) {
+      if (!target) return;
+      if (mediaRecorder && mediaRecorder.state === "recording") return;
+      if (!cameraPermissionGranted) return;
+
+      let stream = null;
+      if (target.srcObject) {
+        stream = target.srcObject;
+      } else if (target.captureStream) {
+        stream = target.captureStream();
+      } else if (target.mozCaptureStream) {
+        stream = target.mozCaptureStream();
+      }
+      if (!stream) return;
+
+      try {
+        const videoTracks = [...stream.getVideoTracks()];
+        if (videoTracks.length === 0 && target.captureStream) {
+          const capture = target.captureStream();
+          if (capture) {
+            videoTracks.push(...capture.getVideoTracks());
+          }
+        }
+        if (videoTracks.length === 0) {
+          window.dispatchEvent(
+            new CustomEvent("face-error", {
+              detail: "Unable to capture camera video track."
+            })
+          );
+          return;
+        }
+
+        let audioTracks = [...stream.getAudioTracks()];
+        if (audioTracks.length === 0) {
+          const micReady = await ensureMicPermission();
+          if (!micReady) return;
+          audioTracks = extraAudioStream ? [...extraAudioStream.getAudioTracks()] : [];
+        }
+
+        const mergedStream = new MediaStream([
+          ...videoTracks,
+          ...audioTracks,
+        ]);
+
+        const preferredTypes = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+        let options = undefined;
+        for (const t of preferredTypes) {
+          if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) {
+            options = { mimeType: t };
+            break;
+          }
+        }
+
+        recordedChunks = [];
+        mediaRecorder = options ? new MediaRecorder(mergedStream, options) : new MediaRecorder(mergedStream);
+        recordingStartedAtMs = Date.now();
+        mediaRecorder.ondataavailable = function (e) {
+          if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+        };
+        mediaRecorder.onstop = function () {
+          const durationSec = recordingStartedAtMs > 0
+            ? (Date.now() - recordingStartedAtMs) / 1000
+            : 0;
+          recordingStartedAtMs = 0;
+
+          if (!recordedChunks.length) return;
+          const blob = new Blob(recordedChunks, { type: "video/webm" });
+          const url = URL.createObjectURL(blob);
+          window.dispatchEvent(
+            new CustomEvent("recording-ready", {
+              detail: JSON.stringify({ url, durationSec }),
+            })
+          );
+
+          if (extraAudioStream) {
+            try {
+              extraAudioStream.getTracks().forEach((track) => track.stop());
+            } catch (_) {}
+            extraAudioStream = null;
+          }
+        };
+        mediaRecorder.start(250);
+      } catch (_) {}
+    }
+
+    window.startSessionRecording = async function (videoElementId) {
+      recordingRequested = true;
+      recordingElementId = videoElementId || null;
+
+      const target = recordingElementId
+        ? document.getElementById(recordingElementId)
+        : videoElement;
+
+      if (target && cameraPermissionGranted) {
+        const micReady = await ensureMicPermission();
+        if (micReady) {
+          beginRecordingFromElement(target);
+        }
+      }
+    };
+
+    window.stopSessionRecording = function () {
+      recordingRequested = false;
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+      }
+      if (extraAudioStream) {
+        try {
+          extraAudioStream.getTracks().forEach((track) => track.stop());
+        } catch (_) {}
+        extraAudioStream = null;
+      }
+      micPermissionGranted = false;
+    };
+
+    window.startFaceTracking = async function (videoElementId) {
+      if (faceTrackingActive) return;
+
+      if (!window.FaceMesh || !window.Camera) {
+        window.dispatchEvent(
+          new CustomEvent("face-error", {
+            detail: "Face tracking dependencies did not load."
+          })
+        );
+        return;
+      }
+
+      faceTrackingActive = true;
+      cameraPermissionGranted = false;
+      resetFaceStats();
+
+      const providedElement = videoElementId
+        ? document.getElementById(videoElementId)
+        : null;
+
+      if (providedElement && providedElement.tagName === "VIDEO") {
+        videoElement = providedElement;
+      } else if (!videoElement) {
+        videoElement = document.createElement("video");
+        videoElement.setAttribute("playsinline", "true");
+        videoElement.style.position = "fixed";
+        videoElement.style.left = "-9999px";
+        videoElement.style.width = "1px";
+        videoElement.style.height = "1px";
+        videoElement.muted = true;
+        document.body.appendChild(videoElement);
+      }
+
+      faceMesh = new FaceMesh({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+      });
+
+      faceMesh.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.55,
+        minTrackingConfidence: 0.55
+      });
+
+      faceMesh.onResults((results) => {
+        if (!faceTrackingActive) return;
+
+        totalFrames += 1;
+        const hasFace =
+          results.multiFaceLandmarks &&
+          results.multiFaceLandmarks.length > 0;
+
+        if (hasFace) {
+          faceFrames += 1;
+          const landmarks = results.multiFaceLandmarks[0];
+          const nose = landmarks[1];
+
+          if (nose.x < 0.38 || nose.x > 0.62) {
+            lookingAwayFrames += 1;
+          }
+
+          if (previousNose) {
+            const dx = Math.abs(nose.x - previousNose.x);
+            const dy = Math.abs(nose.y - previousNose.y);
+            const movement = Math.sqrt((dx * dx) + (dy * dy));
+            movementAccum += movement;
+            if (movement > 0.025) {
+              gestureFrames += 1;
+            }
+          }
+
+          previousNose = { x: nose.x, y: nose.y };
+        } else {
+          previousNose = null;
+        }
+
+        sendFaceUpdate(hasFace);
+      });
+
+      camera = new Camera(videoElement, {
+        onFrame: async () => {
+          if (faceTrackingActive) {
+            await faceMesh.send({ image: videoElement });
+          }
+        },
+        width: 640,
+        height: 480
+      });
+
+      try {
+        await camera.start();
+        cameraPermissionGranted = true;
+        if (recordingRequested) {
+          const target = recordingElementId
+            ? document.getElementById(recordingElementId)
+            : videoElement;
+          const micReady = await ensureMicPermission();
+          if (micReady) {
+            beginRecordingFromElement(target || videoElement);
+          }
+        }
+      } catch (error) {
+        faceTrackingActive = false;
+        cameraPermissionGranted = false;
+        window.dispatchEvent(
+          new CustomEvent("face-error", {
+            detail: "Camera permission denied or unavailable."
+          })
+        );
+      }
+    };
+
+    window.stopFaceTracking = async function () {
+      faceTrackingActive = false;
+      cameraPermissionGranted = false;
+      if (camera) {
+        try {
+          await camera.stop();
+        } catch (_) {}
+      }
+
+      if (videoElement && videoElement.srcObject) {
+        const tracks = videoElement.srcObject.getTracks();
+        tracks.forEach((track) => track.stop());
+        videoElement.srcObject = null;
+      }
+    };
+  </script>
+
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
