@@ -1352,7 +1352,7 @@ $fillerTs
                   if (activeTabIndex == 1) ...[
                     _buildTutorialsCard(),
                     const SizedBox(height: 16),
-                    _buildCameraCard((cameraHeight * 0.72).clamp(320.0, 620.0)),
+                    _buildTutorialFocusCard(),
                   ] else if (activeTabIndex == 2) ...[
                     _buildReportsTab(),
                   ] else
@@ -2395,6 +2395,57 @@ $fillerTs
             Text(
               _modeSpecificCoachingLine(),
               style: const TextStyle(color: Colors.white70),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTutorialFocusCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("Tutorial Focus",
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white)),
+            const SizedBox(height: 10),
+            const Text(
+              "Tutorial mode is for planning the rep first. Open Practice when you're ready to see the camera and live analytics.",
+              style: TextStyle(color: Colors.white70, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0E172F),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: const Color(0xFFFF8A3D).withValues(alpha: 0.32)),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "Before you start",
+                    style: TextStyle(
+                      color: Color(0xFFFFC48B),
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    "1. Read the prompt out loud once.\n2. Decide your opening line.\n3. Pick one example or result to mention.\n4. Then tap Open Practice.",
+                    style: TextStyle(color: Colors.white70, height: 1.45),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
