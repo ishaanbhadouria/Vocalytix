@@ -4,13 +4,23 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:vocalytix/widgets/session_trend_chart.dart';
+import 'package:vocalytix/widgets/vocalytix_brand.dart';
 import 'dart:html' as html;
 import 'dart:js' as js;
 import 'dart:ui_web' as ui_web;
 
-enum CoachingMode { interview, presentation, speech, informal, formal, tutorials }
+enum CoachingMode {
+  interview,
+  presentation,
+  speech,
+  informal,
+  formal,
+  tutorials
+}
 
 enum SessionOutcome { offer, advanced, rejected, unknown }
+
 enum DetailFilter { overview, gestures, outcomes, all }
 
 class FillerTimestamp {
@@ -65,6 +75,7 @@ class SessionReport {
     required this.wpm,
     required this.fillerCount,
     required this.fillerRate,
+    required this.confidenceScore,
     required this.facePresence,
     required this.eyeContact,
     required this.headStability,
@@ -86,6 +97,7 @@ class SessionReport {
   final double wpm;
   final int fillerCount;
   final double fillerRate;
+  final double confidenceScore;
   final double facePresence;
   final double eyeContact;
   final double headStability;
@@ -173,9 +185,20 @@ class _PracticeScreenState extends State<PracticeScreen> {
   final List<_WordSample> _liveWordSamples = [];
   Timer? _paceRefreshTimer;
   Timer? _sessionTimer;
+  Timer? _homeHintTimer;
   int _lastLiveWordCount = 0;
   int _sessionElapsedSec = 0;
   double _lastSessionDurationSec = 0;
+  bool _showLoadingOverlay = true;
+  bool _isSessionBooting = false;
+  int _hintIndex = 0;
+
+  static const List<String> _loadingHints = [
+    "Look at the nose, not the eyes, for more natural eye contact.",
+    "Pause silently instead of filling space with 'um' or 'like'.",
+    "Lead with the point first, then support it with one example.",
+    "Keep your chin level to look steadier on camera.",
+  ];
 
   final Set<String> _singleWordFillers = const {
     "um",
@@ -190,6 +213,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
     super.initState();
     _initCameraPreview();
     _initReplayPreview();
+    _beginLoadingOverlay(const Duration(milliseconds: 2200));
 
     html.window.addEventListener("speech-update", (event) {
       final customEvent = event as html.CustomEvent;
@@ -202,8 +226,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
       final tokens = _tokenizeTranscript(transcript);
       final fillersDetected = _detectFillers(tokens);
 
-      final seconds =
-          startTime == null ? 0 : DateTime.now().difference(startTime!).inSeconds;
+      final seconds = startTime == null
+          ? 0
+          : DateTime.now().difference(startTime!).inSeconds;
       final now = DateTime.now();
       final deltaWords = (words.length - _lastLiveWordCount).clamp(0, 60);
       _lastLiveWordCount = words.length;
@@ -250,6 +275,10 @@ class _PracticeScreenState extends State<PracticeScreen> {
         faceStatus = hasFace ? "Face Detected" : "Face Missing";
         visualMessage = _buildVisualMessage();
         score = _calculateScore();
+        if (_isSessionBooting) {
+          _isSessionBooting = false;
+          _showLoadingOverlay = false;
+        }
       });
     });
 
@@ -308,7 +337,8 @@ class _PracticeScreenState extends State<PracticeScreen> {
 
   void _initCameraPreview() {
     if (!_cameraFactoryRegistered) {
-      ui_web.platformViewRegistry.registerViewFactory(_cameraViewType, (int viewId) {
+      ui_web.platformViewRegistry.registerViewFactory(_cameraViewType,
+          (int viewId) {
         final video = html.VideoElement()
           ..id = '$_cameraElementIdPrefix-$viewId'
           ..autoplay = true
@@ -330,7 +360,8 @@ class _PracticeScreenState extends State<PracticeScreen> {
 
   void _initReplayPreview() {
     if (!_replayFactoryRegistered) {
-      ui_web.platformViewRegistry.registerViewFactory(_replayViewType, (int viewId) {
+      ui_web.platformViewRegistry.registerViewFactory(_replayViewType,
+          (int viewId) {
         final video = html.VideoElement()
           ..autoplay = false
           ..muted = false
@@ -346,9 +377,34 @@ class _PracticeScreenState extends State<PracticeScreen> {
     }
   }
 
+  void _beginLoadingOverlay(Duration duration) {
+    _homeHintTimer?.cancel();
+    setState(() {
+      _showLoadingOverlay = true;
+      _hintIndex = 0;
+    });
+
+    _homeHintTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
+      setState(() {
+        _hintIndex = (_hintIndex + 1) % _loadingHints.length;
+      });
+    });
+
+    Future<void>.delayed(duration, () {
+      if (!mounted || _isSessionBooting) return;
+      _homeHintTimer?.cancel();
+      setState(() {
+        _showLoadingOverlay = false;
+      });
+    });
+  }
+
   void startSpeaking() {
     startTime = DateTime.now();
     setState(() {
+      _isSessionBooting = true;
+      _showLoadingOverlay = true;
       _showReplayInMainCamera = false;
       status = "Listening...";
       wordCount = 0;
@@ -371,6 +427,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
       _liveWordSamples.clear();
       _sessionElapsedSec = 0;
     });
+    _beginLoadingOverlay(const Duration(milliseconds: 2600));
     _paceRefreshTimer?.cancel();
     _paceRefreshTimer = Timer.periodic(const Duration(seconds: 4), (_) {
       _refreshLivePace();
@@ -455,7 +512,8 @@ class _PracticeScreenState extends State<PracticeScreen> {
 
   double _computeLiveWpm(DateTime now) {
     if (_liveWordSamples.isEmpty) return 0;
-    final windowWords = _liveWordSamples.fold<int>(0, (sum, s) => sum + s.words);
+    final windowWords =
+        _liveWordSamples.fold<int>(0, (sum, s) => sum + s.words);
     final earliest = _liveWordSamples.first.timestamp;
     final windowSec = now.difference(earliest).inMilliseconds / 1000.0;
     final effectiveSec = windowSec < 2.0 ? 2.0 : windowSec;
@@ -477,6 +535,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
   void dispose() {
     _paceRefreshTimer?.cancel();
     _sessionTimer?.cancel();
+    _homeHintTimer?.cancel();
     super.dispose();
   }
 
@@ -498,6 +557,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
       wpm: wordsPerMinute,
       fillerCount: fillerCount,
       fillerRate: fillerRate,
+      confidenceScore: _currentConfidenceScore,
       facePresence: facePresencePct,
       eyeContact: eyeContactPct,
       headStability: headStabilityPct,
@@ -571,6 +631,7 @@ VOICE
 
 VISUAL
 - Confidence: ${r.confidenceLabel}
+- Confidence Score: ${r.confidenceScore.toStringAsFixed(1)}/100
 - Face Presence: ${r.facePresence.toStringAsFixed(1)}%
 - Eye Contact: ${r.eyeContact.toStringAsFixed(1)}%
 - Head Stability: ${r.headStability.toStringAsFixed(1)}%
@@ -596,16 +657,21 @@ $fillerTs
     final totalWords = words.length;
     if (totalWords <= 0) return;
 
-    final elapsedSec = DateTime.now().difference(startTime!).inMilliseconds / 1000.0;
-    final scanStart = _lastProcessedWords > 0 ? (_lastProcessedWords - 2).clamp(0, totalWords) : 0;
+    final elapsedSec =
+        DateTime.now().difference(startTime!).inMilliseconds / 1000.0;
+    final scanStart = _lastProcessedWords > 0
+        ? (_lastProcessedWords - 2).clamp(0, totalWords)
+        : 0;
 
     final detected = _detectFillers(words);
     for (final item in detected) {
       if (item.index < scanStart) continue;
       final key = "${item.label}@${item.index}";
       if (_seenFillerKeys.add(key)) {
-        final sec = (elapsedSec * ((item.index + 1) / totalWords)).clamp(0.0, elapsedSec);
-        _currentFillerTimeline.add(FillerTimestamp(word: item.label, seconds: sec));
+        final sec = (elapsedSec * ((item.index + 1) / totalWords))
+            .clamp(0.0, elapsedSec);
+        _currentFillerTimeline
+            .add(FillerTimestamp(word: item.label, seconds: sec));
       }
     }
 
@@ -749,11 +815,7 @@ $fillerTs
   }
 
   String get _confidenceLabel {
-    final confidenceScore = ((facePresencePct * 0.35) +
-            (eyeContactPct * 0.45) +
-            (headStabilityPct * 0.20))
-        .clamp(0, 100)
-        .toDouble();
+    final confidenceScore = _currentConfidenceScore;
     if (confidenceScore >= 85) return "Strong";
     if (confidenceScore >= 70) return "Good";
     if (confidenceScore >= 55) return "Needs Work";
@@ -787,7 +849,8 @@ $fillerTs
 
   List<String> _buildCoachingFeedback(double fillerRate) {
     final feedback = <String>[];
-    feedback.add("${_modeLabel(selectedMode)} focus: ${_modeCoreGoal()}");
+    feedback.add(
+        "You did a good job leaning into ${_modeLabel(selectedMode).toLowerCase()} mode.");
 
     if (wordCount < 20) {
       feedback.add("Run a longer rep (30-60s) to get more reliable scoring.");
@@ -799,18 +862,27 @@ $fillerTs
           "Slow down your pace. Target ${paceTarget.$1.toInt()}-${paceTarget.$2.toInt()} WPM for this mode.");
     } else if (wordsPerMinute > 0 && wordsPerMinute < paceTarget.$1) {
       feedback.add("Speed up slightly to maintain momentum and energy.");
-    } else if (wordsPerMinute >= paceTarget.$1 && wordsPerMinute <= paceTarget.$2) {
+    } else if (wordsPerMinute >= paceTarget.$1 &&
+        wordsPerMinute <= paceTarget.$2) {
       feedback.add("Pacing is in a strong range. Keep this rhythm.");
     }
 
     if (fillerRate >= 7) {
-      feedback.add("Fillers are high. Pause silently instead of using filler words.");
+      feedback.add(
+          "Fillers are high. Pause silently instead of using filler words.");
     } else if (fillerRate <= 3 && wordCount >= 20) {
       feedback.add("Great verbal control. Fillers are low.");
     }
 
+    final transcriptMoment = _highlightedTranscriptMoment;
+    if (transcriptMoment != null) {
+      feedback.add(
+          'Strong moment: "$transcriptMoment" gives you something worth keeping.');
+    }
+
     if (eyeContactPct < 65) {
-      feedback.add("Eye contact is inconsistent. Return to center every sentence.");
+      feedback
+          .add("Eye contact is inconsistent. Return to center every sentence.");
     }
 
     if (headStabilityPct < 60) {
@@ -828,7 +900,8 @@ $fillerTs
     feedback.add(_modeSpecificCoachingLine());
 
     if (feedback.isEmpty) {
-      feedback.add("Strong delivery baseline. Keep practicing for consistency.");
+      feedback
+          .add("Strong delivery baseline. Keep practicing for consistency.");
     }
 
     return feedback.take(4).toList();
@@ -905,7 +978,8 @@ $fillerTs
     }
 
     final lower = text.toLowerCase();
-    final words = lower.split(RegExp(r"\s+")).where((w) => w.isNotEmpty).toList();
+    final words =
+        lower.split(RegExp(r"\s+")).where((w) => w.isNotEmpty).toList();
     final wordTotal = words.length;
 
     final lengthScore = wordTotal < 20
@@ -950,7 +1024,8 @@ $fillerTs
     for (final cue in specificityCues) {
       if (lower.contains(cue)) specificityHits++;
     }
-    final specificityScore = (35 + (specificityHits * 10)).clamp(0, 100).toDouble();
+    final specificityScore =
+        (35 + (specificityHits * 10)).clamp(0, 100).toDouble();
 
     final keywords = _modeKeywords(selectedMode);
     int modeHits = 0;
@@ -960,34 +1035,47 @@ $fillerTs
     final modeFitScore =
         (45 + ((modeHits / keywords.length) * 55)).clamp(0, 100).toDouble();
 
-    final contentScore =
-        ((lengthScore * 0.20) + (structureScore * 0.30) + (specificityScore * 0.25) + (modeFitScore * 0.25))
-            .clamp(0, 100)
-            .toDouble();
+    final contentScore = ((lengthScore * 0.20) +
+            (structureScore * 0.30) +
+            (specificityScore * 0.25) +
+            (modeFitScore * 0.25))
+        .clamp(0, 100)
+        .toDouble();
 
     final feedback = <String>[];
     if (wordTotal < 30) {
-      feedback.add("Give longer responses (45-90 seconds) so your message feels complete.");
+      feedback.add(
+          "Give longer responses (45-90 seconds) so your message feels complete.");
     } else {
       feedback.add("Response length is solid for analysis.");
     }
 
+    final transcriptMoment = _highlightedTranscriptMoment;
+    if (transcriptMoment != null) {
+      feedback
+          .add('You did a really good job when you said "$transcriptMoment".');
+    }
+
     if (structureScore < 70) {
-      feedback.add("Add stronger structure: start with your point, then one example, then result.");
+      feedback.add(
+          "Add stronger structure: start with your point, then one example, then result.");
     } else {
       feedback.add("Your structure is clear and easy to follow.");
     }
 
     if (specificityScore < 70) {
-      feedback.add("Add concrete evidence: numbers, outcomes, or a specific scenario.");
+      feedback.add(
+          "Add concrete evidence: numbers, outcomes, or a specific scenario.");
     } else {
       feedback.add("Good specificity. You used concrete details well.");
     }
 
     if (modeFitScore < 68) {
-      feedback.add("Use more ${_modeLabel(selectedMode).toLowerCase()}-specific language for stronger alignment.");
+      feedback.add(
+          "Use more ${_modeLabel(selectedMode).toLowerCase()}-specific language for stronger alignment.");
     } else {
-      feedback.add("Content aligns well with ${_modeLabel(selectedMode)} mode.");
+      feedback
+          .add("Content aligns well with ${_modeLabel(selectedMode)} mode.");
     }
 
     if (selectedMode == CoachingMode.interview &&
@@ -995,7 +1083,8 @@ $fillerTs
             lower.contains("task") ||
             lower.contains("action") ||
             lower.contains("result"))) {
-      feedback.add("For interview answers, use STAR flow: Situation, Task, Action, Result.");
+      feedback.add(
+          "For interview answers, use STAR flow: Situation, Task, Action, Result.");
     }
 
     return (contentScore, feedback.take(4).toList());
@@ -1100,7 +1189,9 @@ $fillerTs
       return "No outcome data yet for ${_modeLabel(selectedMode)} mode.";
     }
     final success = modeLogs
-        .where((s) => s.outcome == SessionOutcome.offer || s.outcome == SessionOutcome.advanced)
+        .where((s) =>
+            s.outcome == SessionOutcome.offer ||
+            s.outcome == SessionOutcome.advanced)
         .length;
     final successRate = (success / modeLogs.length) * 100;
     final avgScore =
@@ -1120,11 +1211,7 @@ $fillerTs
     }
 
     final fillerRate = wordCount > 0 ? (fillerCount / wordCount) * 100 : 0.0;
-    final confidenceScore = (((facePresencePct * 0.35) +
-                (eyeContactPct * 0.45) +
-                (headStabilityPct * 0.20))
-            .clamp(0, 100))
-        .toDouble();
+    final confidenceScore = _currentConfidenceScore;
     final cameraHeight =
         ((MediaQuery.of(context).size.height * 0.65).clamp(420.0, 760.0))
             .toDouble();
@@ -1132,190 +1219,206 @@ $fillerTs
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Vocalytix Studio"),
-      ),
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFF0B1020), Color(0xFF141F3F)],
-          ),
+        titleSpacing: 10,
+        title: VocalytixBrandButton(
+          compact: true,
+          onTap: isListening
+              ? null
+              : () {
+                  setState(() {
+                    hasSelectedMode = false;
+                    activeTabIndex = 0;
+                    _showReplayInMainCamera = false;
+                  });
+                  _beginLoadingOverlay(const Duration(milliseconds: 1800));
+                },
         ),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                "${_modeLabel(selectedMode)} Analytics",
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                    ),
+      ),
+      body: Stack(
+        children: [
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xFF0B1020), Color(0xFF141F3F)],
               ),
-              const SizedBox(height: 18),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
+            ),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _metricTile("Status", status, const Color(0xFF1D4ED8)),
-                  _metricTile("Score", _scoreDisplay,
-                      const Color(0xFF059669)),
-                  _metricTile("Pace", _paceLabel, const Color(0xFF9333EA)),
-                  _metricTile("Confidence", _confidenceLabel, const Color(0xFFEA580C)),
-                  _metricTile("WPM", wordsPerMinute.toStringAsFixed(1),
-                      const Color(0xFF0EA5E9)),
-                  _metricTile("Fillers", fillerCount.toString(),
-                      const Color(0xFFDC2626)),
-                  _metricTile("Timer", _formatClock(_sessionElapsedSec),
-                      const Color(0xFF14B8A6)),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: isListening ? null : startSpeaking,
-                      icon: const Icon(Icons.play_arrow_rounded),
-                      label: const Text("Start Session"),
-                    ),
+                  Text(
+                    "${_modeLabel(selectedMode)} Analytics",
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: isListening ? stopSpeaking : null,
-                      icon: const Icon(Icons.stop_circle_outlined),
-                      label: const Text("Stop Session"),
-                    ),
+                  const SizedBox(height: 8),
+                  Text(
+                    "Keep the camera live while you review analytics and transcript feedback.",
+                    style:
+                        TextStyle(color: Colors.white.withValues(alpha: 0.72)),
                   ),
-                ],
-              ),
-              const SizedBox(height: 18),
-              Row(
-                children: [
-                  ChoiceChip(
-                    selected: activeTabIndex == 0,
-                    label: const Text("Practice"),
-                    onSelected: (_) => setState(() => activeTabIndex = 0),
+                  const SizedBox(height: 18),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      _metricTile("Status", status, const Color(0xFFF97316)),
+                      _metricTile(
+                          "Score", _scoreDisplay, const Color(0xFFFB923C)),
+                      _metricTile("Pace", _paceLabel, const Color(0xFF9333EA)),
+                      _metricTile("Confidence", _confidenceLabel,
+                          const Color(0xFFFFB347)),
+                      _metricTile("WPM", wordsPerMinute.toStringAsFixed(1),
+                          const Color(0xFF0EA5E9)),
+                      _metricTile("Fillers", fillerCount.toString(),
+                          const Color(0xFFDC2626)),
+                      _metricTile("Timer", _formatClock(_sessionElapsedSec),
+                          const Color(0xFF14B8A6)),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    selected: activeTabIndex == 1,
-                    label: const Text("Tutorials"),
-                    onSelected: (_) => setState(() => activeTabIndex = 1),
+                  const SizedBox(height: 18),
+                  Row(
+                    children: [
+                      ChoiceChip(
+                        selected: activeTabIndex == 0,
+                        label: const Text("Practice"),
+                        onSelected: (_) => setState(() => activeTabIndex = 0),
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        selected: activeTabIndex == 1,
+                        label: const Text("Tutorials"),
+                        onSelected: (_) => setState(() => activeTabIndex = 1),
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        selected: activeTabIndex == 2,
+                        label: const Text("Reports"),
+                        onSelected: (_) => setState(() => activeTabIndex = 2),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    selected: activeTabIndex == 2,
-                    label: const Text("Reports"),
-                    onSelected: (_) => setState(() => activeTabIndex = 2),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              if (activeTabIndex == 0)
-                Row(
-                  children: [
-                    TextButton.icon(
-                      onPressed: isListening
-                          ? null
-                          : () {
-                              setState(() {
-                                hasSelectedMode = false;
-                              });
-                            },
-                      icon: const Icon(Icons.swap_horiz_rounded),
-                      label: Text("Mode: ${_modeLabel(selectedMode)}"),
-                    ),
-                  ],
-                ),
-              if (activeTabIndex == 0) const SizedBox(height: 8),
-              if (activeTabIndex == 0)
-                Row(
-                  children: [
-                    const Text("Detail View",
-                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700)),
-                    const SizedBox(width: 12),
-                    DropdownButton<DetailFilter>(
-                      value: selectedDetailFilter,
-                      dropdownColor: const Color(0xFF111A33),
-                      style: const TextStyle(color: Colors.white),
-                      items: DetailFilter.values
-                          .map((f) => DropdownMenuItem(
-                                value: f,
-                                child: Text(_detailFilterLabel(f)),
-                              ))
-                          .toList(),
-                      onChanged: (value) {
-                        if (value == null) return;
-                        setState(() => selectedDetailFilter = value);
-                      },
-                    ),
-                  ],
-                ),
-              if (activeTabIndex == 0) const SizedBox(height: 10),
-              if (activeTabIndex == 1) ...[
-                _buildTutorialsCard(),
-                const SizedBox(height: 16),
-                _buildCameraCard((cameraHeight * 0.72).clamp(320.0, 620.0)),
-              ] else if (activeTabIndex == 2) ...[
-                _buildReportsTab(),
-              ] else ...[
-                ],
-              if (activeTabIndex == 0) ...[
-              isNarrow
-                  ? Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                  const SizedBox(height: 16),
+                  if (activeTabIndex == 0)
+                    Row(
                       children: [
-                        _buildCameraCard(cameraHeight),
-                      ],
-                    )
-                  : Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(flex: 2, child: _buildCameraCard(cameraHeight)),
-                      ],
-                    ),
-              const SizedBox(height: 16),
-                _buildTranscriptCard(fillerRate, confidenceScore),
-              const SizedBox(height: 16),
-              if (selectedDetailFilter == DetailFilter.overview)
-                const Card(
-                  child: Padding(
-                    padding: EdgeInsets.all(14),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text("Quick Summary",
-                            style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w800,
-                                fontSize: 16)),
-                        SizedBox(height: 8),
-                        Text(
-                          "Use Detail View to open Gestures or Outcomes. Camera and transcript stay visible.",
-                          style: TextStyle(color: Colors.white70),
+                        TextButton.icon(
+                          onPressed: isListening
+                              ? null
+                              : () {
+                                  setState(() {
+                                    hasSelectedMode = false;
+                                  });
+                                  _beginLoadingOverlay(
+                                      const Duration(milliseconds: 1800));
+                                },
+                          icon: const Icon(Icons.swap_horiz_rounded),
+                          label: Text("Mode: ${_modeLabel(selectedMode)}"),
                         ),
                       ],
                     ),
-                  ),
-                ),
-              if (selectedDetailFilter == DetailFilter.gestures ||
-                  selectedDetailFilter == DetailFilter.all) ...[
-              const SizedBox(height: 16),
-              _buildGestureCard(fillerRate),
-              ],
-              if (selectedDetailFilter == DetailFilter.outcomes ||
-                  selectedDetailFilter == DetailFilter.all) ...[
-              const SizedBox(height: 16),
-              _buildOutcomeCard(),
-              ],
-              ],
-            ],
+                  if (activeTabIndex == 0) const SizedBox(height: 8),
+                  if (activeTabIndex == 0)
+                    Row(
+                      children: [
+                        const Text("Detail View",
+                            style: TextStyle(
+                                color: Colors.white70,
+                                fontWeight: FontWeight.w700)),
+                        const SizedBox(width: 12),
+                        DropdownButton<DetailFilter>(
+                          value: selectedDetailFilter,
+                          dropdownColor: const Color(0xFF111A33),
+                          style: const TextStyle(color: Colors.white),
+                          items: DetailFilter.values
+                              .map((f) => DropdownMenuItem(
+                                    value: f,
+                                    child: Text(_detailFilterLabel(f)),
+                                  ))
+                              .toList(),
+                          onChanged: (value) {
+                            if (value == null) return;
+                            setState(() => selectedDetailFilter = value);
+                          },
+                        ),
+                      ],
+                    ),
+                  if (activeTabIndex == 0) const SizedBox(height: 10),
+                  if (activeTabIndex == 1) ...[
+                    _buildTutorialsCard(),
+                    const SizedBox(height: 16),
+                    _buildCameraCard((cameraHeight * 0.72).clamp(320.0, 620.0)),
+                  ] else if (activeTabIndex == 2) ...[
+                    _buildReportsTab(),
+                  ] else
+                    ...[],
+                  if (activeTabIndex == 0) ...[
+                    isNarrow
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _buildCameraCard(cameraHeight),
+                            ],
+                          )
+                        : Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                  flex: 2,
+                                  child: _buildCameraCard(cameraHeight)),
+                            ],
+                          ),
+                    const SizedBox(height: 16),
+                    _buildTranscriptCard(fillerRate, confidenceScore),
+                    const SizedBox(height: 16),
+                    if (selectedDetailFilter == DetailFilter.overview)
+                      const Card(
+                        child: Padding(
+                          padding: EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text("Quick Summary",
+                                  style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 16)),
+                              SizedBox(height: 8),
+                              Text(
+                                "Use Detail View to open Gestures or Outcomes. Camera and transcript stay visible.",
+                                style: TextStyle(color: Colors.white70),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    if (selectedDetailFilter == DetailFilter.gestures ||
+                        selectedDetailFilter == DetailFilter.all) ...[
+                      const SizedBox(height: 16),
+                      _buildGestureCard(fillerRate),
+                    ],
+                    if (selectedDetailFilter == DetailFilter.outcomes ||
+                        selectedDetailFilter == DetailFilter.all) ...[
+                      const SizedBox(height: 16),
+                      _buildOutcomeCard(),
+                    ],
+                  ],
+                ],
+              ),
+            ),
           ),
-        ),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 450),
+            child: _showLoadingOverlay
+                ? _buildLoadingOverlay()
+                : const SizedBox.shrink(),
+          ),
+        ],
       ),
     );
   }
@@ -1333,10 +1436,14 @@ $fillerTs
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(label,
-              style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w700)),
+              style: TextStyle(
+                  color: color, fontSize: 12, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           Text(value,
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700)),
         ],
       ),
     );
@@ -1349,8 +1456,57 @@ $fillerTs
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(_showReplayInMainCamera ? "Session Replay" : "Live Camera",
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                      _showReplayInMainCamera
+                          ? "Session Replay"
+                          : "Live Camera",
+                      style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white)),
+                ),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.end,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: isListening ? null : startSpeaking,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFDC2626),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 12),
+                        ),
+                        icon: const Icon(Icons.fiber_manual_record_rounded,
+                            size: 16),
+                        label: const Text("Record"),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: isListening ? stopSpeaking : null,
+                        style: OutlinedButton.styleFrom(
+                          side: BorderSide(
+                            color: isListening
+                                ? const Color(0xFFFFA24C)
+                                : Colors.white.withValues(alpha: 0.12),
+                          ),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 12),
+                        ),
+                        icon: const _HexStopIcon(),
+                        label: const Text("Stop"),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 10),
             SizedBox(
               height: cameraHeight,
@@ -1365,7 +1521,8 @@ $fillerTs
                               'vocalytix-replay-main-${_latestRecording?.createdAt.millisecondsSinceEpoch ?? 0}'),
                           viewType: _replayViewType,
                           onPlatformViewCreated: (_) {
-                            final url = _latestRecording?.url ?? _pendingReplayUrl;
+                            final url =
+                                _latestRecording?.url ?? _pendingReplayUrl;
                             if (url != null && url.isNotEmpty) {
                               _loadReplay(url);
                             }
@@ -1384,6 +1541,23 @@ $fillerTs
                 ),
               ),
             ),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0E172F),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: const Color(0xFFFF8A3D).withValues(alpha: 0.32)),
+              ),
+              child: Text(
+                isListening
+                    ? "Analytics stay live while recording. Keep speaking naturally and glance near the lens."
+                    : "Start a session to record, score, and review replay without leaving this view.",
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ),
             if (_showReplayInMainCamera && _latestRecording != null) ...[
               const SizedBox(height: 10),
               Row(
@@ -1391,19 +1565,27 @@ $fillerTs
                   IconButton(
                     onPressed: _toggleReplay,
                     icon: Icon(
-                      _replayPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
+                      _replayPlaying
+                          ? Icons.pause_circle_filled
+                          : Icons.play_circle_fill,
                       size: 30,
                       color: const Color(0xFF38BDF8),
                     ),
                   ),
                   Expanded(
                     child: Slider(
-                      value: _replayPositionSec.clamp(
-                        0,
-                        _effectiveReplayDurationSec > 0 ? _effectiveReplayDurationSec : 1.0,
-                      ).toDouble(),
+                      value: _replayPositionSec
+                          .clamp(
+                            0,
+                            _effectiveReplayDurationSec > 0
+                                ? _effectiveReplayDurationSec
+                                : 1.0,
+                          )
+                          .toDouble(),
                       min: 0,
-                      max: _effectiveReplayDurationSec > 0 ? _effectiveReplayDurationSec : 1.0,
+                      max: _effectiveReplayDurationSec > 0
+                          ? _effectiveReplayDurationSec
+                          : 1.0,
                       onChangeStart: (_) {
                         _isScrubbingReplay = true;
                       },
@@ -1427,7 +1609,8 @@ $fillerTs
               const SizedBox(height: 6),
               const Text(
                 "Filler Timestamps",
-                style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: Colors.white70, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               if (_latestRecording!.fillerTimeline.isEmpty)
@@ -1441,7 +1624,8 @@ $fillerTs
                   runSpacing: 8,
                   children: _latestRecording!.fillerTimeline.take(24).map((f) {
                     return ActionChip(
-                      backgroundColor: const Color(0xFF1D4ED8).withValues(alpha: 0.25),
+                      backgroundColor:
+                          const Color(0xFF1D4ED8).withValues(alpha: 0.25),
                       side: const BorderSide(color: Color(0xFF1D4ED8)),
                       label: Text(
                         "${_formatMinutesSeconds(f.seconds)} • ${f.word}",
@@ -1468,12 +1652,45 @@ $fillerTs
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text("Gesture Feedback",
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white)),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2B180B),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: const Color(0xFFFF8A3D).withValues(alpha: 0.45)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Most Important Right Now",
+                    style: TextStyle(
+                      color: Color(0xFFFFC48B),
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    coachingFeedback.first,
+                    style: const TextStyle(color: Colors.white, height: 1.35),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 12),
             _feedbackRow("Face Status", faceStatus),
-            _feedbackRow("Face Presence", "${facePresencePct.toStringAsFixed(1)}%"),
+            _feedbackRow(
+                "Face Presence", "${facePresencePct.toStringAsFixed(1)}%"),
             _feedbackRow("Eye Contact", "${eyeContactPct.toStringAsFixed(1)}%"),
-            _feedbackRow("Head Stability", "${headStabilityPct.toStringAsFixed(1)}%"),
+            _feedbackRow(
+                "Head Stability", "${headStabilityPct.toStringAsFixed(1)}%"),
             _feedbackRow("Gesture Rating", _gestureActivityLabel),
             _feedbackRow("Gesture Moments", gestureFrames.toString()),
             const SizedBox(height: 8),
@@ -1482,17 +1699,21 @@ $fillerTs
               decoration: BoxDecoration(
                 color: const Color(0xFF0E172F),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.blueGrey.withValues(alpha: 0.45)),
+                border:
+                    Border.all(color: Colors.blueGrey.withValues(alpha: 0.45)),
               ),
               child: Text(
                 visualMessage,
-                style: const TextStyle(fontStyle: FontStyle.italic, color: Colors.white70),
+                style: const TextStyle(
+                    fontStyle: FontStyle.italic, color: Colors.white70),
               ),
             ),
             const SizedBox(height: 12),
             const Text("Coaching Feedback",
                 style: TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w800, color: Colors.white)),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white)),
             const SizedBox(height: 8),
             ...coachingFeedback.map(
               (line) => Padding(
@@ -1502,13 +1723,15 @@ $fillerTs
                   children: [
                     const Padding(
                       padding: EdgeInsets.only(top: 2),
-                      child: Icon(Icons.circle, size: 7, color: Color(0xFF38BDF8)),
+                      child:
+                          Icon(Icons.circle, size: 7, color: Color(0xFF38BDF8)),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         line,
-                        style: const TextStyle(color: Colors.white70, height: 1.35),
+                        style: const TextStyle(
+                            color: Colors.white70, height: 1.35),
                       ),
                     ),
                   ],
@@ -1533,12 +1756,43 @@ $fillerTs
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text("Live Transcript",
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white)),
             const SizedBox(height: 8),
             Text(
               "Words: $wordCount  •  Filler Rate: ${fillerRate.toStringAsFixed(1)}%  •  Confidence: ${confidenceScore.toStringAsFixed(0)}/100",
               style: const TextStyle(color: Colors.white70, fontSize: 13),
             ),
+            if (_highlightedTranscriptMoment != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2B180B),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: const Color(0xFFFF8A3D).withValues(alpha: 0.42)),
+                ),
+                child: RichText(
+                  text: TextSpan(
+                    style: const TextStyle(color: Colors.white70, height: 1.35),
+                    children: [
+                      const TextSpan(
+                        text: "Highlighted moment: ",
+                        style: TextStyle(
+                          color: Color(0xFFFFC48B),
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      TextSpan(text: _highlightedTranscriptMoment),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 10),
             Container(
               width: double.infinity,
@@ -1546,7 +1800,8 @@ $fillerTs
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: const Color(0xFF0E172F),
-                border: Border.all(color: Colors.blueGrey.withValues(alpha: 0.4)),
+                border:
+                    Border.all(color: Colors.blueGrey.withValues(alpha: 0.4)),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: SelectableText(
@@ -1566,7 +1821,8 @@ $fillerTs
             ),
             const SizedBox(height: 8),
             const Text("Content Feedback",
-                style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700)),
+                style: TextStyle(
+                    color: Colors.white70, fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
             ...contentFeedback.map(
               (line) => Padding(
@@ -1576,13 +1832,15 @@ $fillerTs
                   children: [
                     const Padding(
                       padding: EdgeInsets.only(top: 2),
-                      child: Icon(Icons.circle, size: 7, color: Color(0xFF22D3EE)),
+                      child:
+                          Icon(Icons.circle, size: 7, color: Color(0xFF22D3EE)),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         line,
-                        style: const TextStyle(color: Colors.white70, height: 1.35),
+                        style: const TextStyle(
+                            color: Colors.white70, height: 1.35),
                       ),
                     ),
                   ],
@@ -1603,7 +1861,10 @@ $fillerTs
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text("Outcome Tracking (AI Training Data)",
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white)),
             const SizedBox(height: 8),
             const Text(
               "After a real interview/speech, log the result so Vocalytix can learn success patterns by mode.",
@@ -1627,7 +1888,8 @@ $fillerTs
             ),
             const SizedBox(height: 12),
             ElevatedButton.icon(
-              onPressed: (isListening || wordCount < 8) ? null : _saveSessionOutcome,
+              onPressed:
+                  (isListening || wordCount < 8) ? null : _saveSessionOutcome,
               icon: const Icon(Icons.save_alt_rounded),
               label: const Text("Save Session Outcome"),
             ),
@@ -1650,7 +1912,10 @@ $fillerTs
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text("Saved Session Replays",
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white)),
             const SizedBox(height: 8),
             if (_sessionRecordings.isEmpty)
               const Text(
@@ -1658,50 +1923,55 @@ $fillerTs
                 style: TextStyle(color: Colors.white70),
               ),
             ..._sessionRecordings.take(6).map(
-              (recording) => Container(
-                margin: const EdgeInsets.only(top: 10),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0E172F),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.white12),
+                  (recording) => Container(
+                    margin: const EdgeInsets.only(top: 10),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0E172F),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "${_modeLabel(recording.mode)} • Score ${recording.score.toStringAsFixed(0)}",
+                          style: const TextStyle(
+                              color: Colors.white, fontWeight: FontWeight.w800),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          recording.createdAt.toLocal().toString(),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            html.window.open(recording.url, "_blank");
+                          },
+                          icon: const Icon(Icons.play_circle_outline_rounded),
+                          label: const Text("Open Recording"),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text("Filler Timestamps",
+                            style: TextStyle(
+                                color: Colors.white70,
+                                fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 6),
+                        if (recording.fillerTimeline.isEmpty)
+                          const Text("No filler words detected.",
+                              style: TextStyle(color: Colors.white70)),
+                        ...recording.fillerTimeline.take(10).map(
+                              (f) => Text(
+                                "${_formatMinutesSeconds(f.seconds)} - ${f.word}",
+                                style: const TextStyle(color: Colors.white70),
+                              ),
+                            ),
+                      ],
+                    ),
+                  ),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "${_modeLabel(recording.mode)} • Score ${recording.score.toStringAsFixed(0)}",
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      recording.createdAt.toLocal().toString(),
-                      style: const TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        html.window.open(recording.url, "_blank");
-                      },
-                      icon: const Icon(Icons.play_circle_outline_rounded),
-                      label: const Text("Open Recording"),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text("Filler Timestamps",
-                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 6),
-                    if (recording.fillerTimeline.isEmpty)
-                      const Text("No filler words detected.", style: TextStyle(color: Colors.white70)),
-                    ...recording.fillerTimeline.take(10).map(
-                      (f) => Text(
-                        "${_formatMinutesSeconds(f.seconds)} - ${f.word}",
-                        style: const TextStyle(color: Colors.white70),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
           ],
         ),
       ),
@@ -1716,50 +1986,79 @@ $fillerTs
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text("Full Reports",
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white)),
             const SizedBox(height: 8),
             if (_sessionReports.isEmpty)
               const Text(
                 "No reports yet. Stop a session after speaking to generate one.",
                 style: TextStyle(color: Colors.white70),
               ),
-            ..._sessionReports.take(8).map(
-              (report) => Container(
-                margin: const EdgeInsets.only(top: 10),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0E172F),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            "${_modeLabel(report.mode)} • ${report.overallScore.toStringAsFixed(0)}/100",
-                            style: const TextStyle(
-                                color: Colors.white, fontWeight: FontWeight.w800),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            report.createdAt.toLocal().toString(),
-                            style: const TextStyle(color: Colors.white70, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: () => _showFullReportDialog(report),
-                      icon: const Icon(Icons.description_outlined),
-                      label: const Text("View"),
-                    ),
-                  ],
-                ),
+            if (_sessionReports.length >= 3) ...[
+              const SizedBox(height: 10),
+              SessionTrendChart(
+                scores: _sessionReports
+                    .take(6)
+                    .toList()
+                    .reversed
+                    .map((report) => report.overallScore)
+                    .toList(),
+                accentColor: const Color(0xFFFF8A3D),
+                label: "Overall Score Trend",
               ),
-            ),
+              const SizedBox(height: 12),
+              SessionTrendChart(
+                scores: _sessionReports
+                    .take(6)
+                    .toList()
+                    .reversed
+                    .map((report) => report.confidenceScore)
+                    .toList(),
+                accentColor: const Color(0xFF38BDF8),
+                label: "Confidence Trend",
+              ),
+            ],
+            ..._sessionReports.take(8).map(
+                  (report) => Container(
+                    margin: const EdgeInsets.only(top: 10),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0E172F),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "${_modeLabel(report.mode)} • ${report.overallScore.toStringAsFixed(0)}/100",
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w800),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                report.createdAt.toLocal().toString(),
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: () => _showFullReportDialog(report),
+                          icon: const Icon(Icons.description_outlined),
+                          label: const Text("View"),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
           ],
         ),
       ),
@@ -1779,7 +2078,13 @@ $fillerTs
 
   Widget _buildModeEntryScreen(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Choose Practice Mode")),
+      appBar: AppBar(
+        titleSpacing: 10,
+        title: VocalytixBrandButton(
+          compact: true,
+          onTap: () {},
+        ),
+      ),
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -1802,7 +2107,7 @@ $fillerTs
               ),
               const SizedBox(height: 8),
               const Text(
-                "Vocalytix will tune scoring and coaching based on this mode.",
+                "The design stays intact. Pick a mode and Vocalytix will tune scoring and coaching around it.",
                 style: TextStyle(color: Colors.white70),
               ),
               const SizedBox(height: 18),
@@ -1810,7 +2115,8 @@ $fillerTs
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final width = constraints.maxWidth;
-                    final crossAxisCount = width >= 1200 ? 3 : (width >= 760 ? 2 : 1);
+                    final crossAxisCount =
+                        width >= 1200 ? 3 : (width >= 760 ? 2 : 1);
                     final childAspectRatio = crossAxisCount == 3 ? 2.35 : 2.1;
 
                     return GridView.count(
@@ -1820,46 +2126,69 @@ $fillerTs
                       childAspectRatio: childAspectRatio,
                       physics: const ClampingScrollPhysics(),
                       children: CoachingMode.values.map((mode) {
-                    final selected = selectedMode == mode;
-                    return InkWell(
-                      borderRadius: BorderRadius.circular(14),
-                      onTap: () {
-                        setState(() {
-                          selectedMode = mode;
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: selected ? const Color(0xFF1E3A8A) : const Color(0xFF182447),
+                        final selected = selectedMode == mode;
+                        return InkWell(
                           borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                            color: selected
-                                ? const Color(0xFF38BDF8)
-                                : Colors.white12,
-                          ),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(
-                              _modeLabel(mode),
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 17,
-                                fontWeight: FontWeight.w800,
+                          onTap: () {
+                            setState(() {
+                              selectedMode = mode;
+                            });
+                          },
+                          onDoubleTap: () {
+                            setState(() {
+                              selectedMode = mode;
+                              hasSelectedMode = true;
+                              activeTabIndex =
+                                  selectedMode == CoachingMode.tutorials
+                                      ? 1
+                                      : 0;
+                              score = _calculateScore();
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: selected
+                                  ? const Color(0xFF4A230C)
+                                  : const Color(0xFF182447),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: selected
+                                    ? const Color(0xFFFF8A3D)
+                                    : Colors.white12,
                               ),
                             ),
-                            const SizedBox(height: 6),
-                            Text(
-                              _modeDescription(mode),
-                              style: const TextStyle(color: Colors.white70),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  _modeLabel(mode),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  _modeDescription(mode),
+                                  style: const TextStyle(color: Colors.white70),
+                                ),
+                                if (selected) ...[
+                                  const SizedBox(height: 10),
+                                  const Text(
+                                    "Double-click to jump straight in.",
+                                    style: TextStyle(
+                                      color: Color(0xFFFFC48B),
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
-                          ],
-                        ),
-                      ),
-                    );
+                          ),
+                        );
                       }).toList(),
                     );
                   },
@@ -1877,6 +2206,10 @@ $fillerTs
                       score = _calculateScore();
                     });
                   },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFE86D1F),
+                    foregroundColor: Colors.white,
+                  ),
                   icon: const Icon(Icons.arrow_forward_rounded),
                   label: const Text("Start Mode"),
                 ),
@@ -2002,7 +2335,10 @@ $fillerTs
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text("Guided Tutorials",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white)),
             const SizedBox(height: 10),
             const Text(
               "Mode-tailored behavioral practice prompt:",
@@ -2011,7 +2347,9 @@ $fillerTs
             const SizedBox(height: 8),
             const Text("Behavioral Prompt",
                 style: TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w800, color: Colors.white)),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white)),
             const SizedBox(height: 8),
             Container(
               width: double.infinity,
@@ -2019,7 +2357,8 @@ $fillerTs
               decoration: BoxDecoration(
                 color: const Color(0xFF0E172F),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFF38BDF8).withValues(alpha: 0.5)),
+                border: Border.all(
+                    color: const Color(0xFFFF8A3D).withValues(alpha: 0.5)),
               ),
               child: Text(
                 _currentBehavioralPrompt,
@@ -2049,7 +2388,8 @@ $fillerTs
             const SizedBox(height: 14),
             const Text(
               "Quick Tip",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+              style:
+                  TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 6),
             Text(
@@ -2070,7 +2410,9 @@ $fillerTs
           Expanded(
             child: Text(label, style: const TextStyle(color: Colors.white70)),
           ),
-          Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+          Text(value,
+              style: const TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w700)),
         ],
       ),
     );
@@ -2102,13 +2444,105 @@ $fillerTs
     return "${score.toStringAsFixed(0)} / 100";
   }
 
+  double get _currentConfidenceScore {
+    return ((facePresencePct * 0.35) +
+            (eyeContactPct * 0.45) +
+            (headStabilityPct * 0.20))
+        .clamp(0, 100)
+        .toDouble();
+  }
+
+  String? get _highlightedTranscriptMoment {
+    final trimmed = transcript.trim();
+    if (trimmed.isEmpty) return null;
+    final parts = trimmed
+        .split(RegExp(r'(?<=[.!?])\s+'))
+        .where((part) => part.trim().isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return null;
+    final best = parts.reduce((a, b) => a.length >= b.length ? a : b).trim();
+    return best.length > 120 ? "${best.substring(0, 117)}..." : best;
+  }
+
+  Widget _buildLoadingOverlay() {
+    return Container(
+      key: ValueKey("loading-$_hintIndex-$_isSessionBooting-$hasSelectedMode"),
+      color: const Color(0xF20A0F1D),
+      alignment: Alignment.center,
+      child: Center(
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 520),
+          margin: const EdgeInsets.symmetric(horizontal: 24),
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: const Color(0xFF10182F),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+                color: const Color(0xFFFF8A3D).withValues(alpha: 0.38)),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFFFF8A3D).withValues(alpha: 0.12),
+                blurRadius: 36,
+                spreadRadius: 8,
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0.95, end: 1),
+                duration: const Duration(milliseconds: 650),
+                builder: (context, value, child) {
+                  return Transform.scale(scale: value, child: child);
+                },
+                child: const VocalytixBrandButton(),
+              ),
+              const SizedBox(height: 22),
+              const SizedBox(
+                width: 34,
+                height: 34,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3.2,
+                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFFF8A3D)),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                _isSessionBooting
+                    ? "Warming up your live coaching session..."
+                    : "Loading Vocalytix...",
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 10),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                child: Text(
+                  _loadingHints[_hintIndex],
+                  key: ValueKey(_hintIndex),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   List<String> _tokenizeTranscript(String text) {
     final lower = text.toLowerCase();
     final cleaned = lower.replaceAll(RegExp(r"[^\w\s]"), " ");
-    return cleaned
-        .split(RegExp(r"\s+"))
-        .where((w) => w.isNotEmpty)
-        .toList();
+    return cleaned.split(RegExp(r"\s+")).where((w) => w.isNotEmpty).toList();
   }
 
   List<_DetectedFiller> _detectFillers(List<String> words) {
@@ -2205,5 +2639,24 @@ $fillerTs
     final prev = words[i - 1];
     const fillerLikeBefore = {"um", "uh", "like", "you", "know"};
     return fillerLikeBefore.contains(prev);
+  }
+}
+
+class _HexStopIcon extends StatelessWidget {
+  const _HexStopIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 18,
+      height: 18,
+      child: Stack(
+        alignment: Alignment.center,
+        children: const [
+          Icon(Icons.hexagon, size: 18, color: Color(0xFFFFA24C)),
+          Icon(Icons.stop_rounded, size: 9, color: Color(0xFFFFF0E0)),
+        ],
+      ),
+    );
   }
 }
