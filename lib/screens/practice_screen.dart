@@ -27,10 +27,12 @@ class FillerTimestamp {
   const FillerTimestamp({
     required this.word,
     required this.seconds,
+    required this.transcriptIndex,
   });
 
   final String word;
   final double seconds;
+  final int transcriptIndex;
 }
 
 class SessionLog {
@@ -53,6 +55,7 @@ class SessionRecording {
     required this.mode,
     required this.score,
     required this.createdAt,
+    required this.transcript,
     required this.fillerTimeline,
   });
 
@@ -60,6 +63,7 @@ class SessionRecording {
   final CoachingMode mode;
   final double score;
   final DateTime createdAt;
+  final String transcript;
   final List<FillerTimestamp> fillerTimeline;
 }
 
@@ -182,6 +186,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
   String? _pendingReplayUrl;
   bool _showReplayInMainCamera = false;
   bool _isScrubbingReplay = false;
+  int? _forcedReplayWordIndex;
   final List<_WordSample> _liveWordSamples = [];
   Timer? _paceRefreshTimer;
   Timer? _sessionTimer;
@@ -308,6 +313,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
             mode: _pendingReportDialog?.mode ?? selectedMode,
             score: _pendingReportDialog?.overallScore ?? score,
             createdAt: DateTime.now(),
+            transcript: transcript,
             fillerTimeline: List<FillerTimestamp>.from(
               _pendingReportDialog?.fillerTimeline ?? _currentFillerTimeline,
             ),
@@ -320,6 +326,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
           _replayDurationSec = jsDuration;
           _lastSessionDurationSec = jsDuration;
         }
+        _forcedReplayWordIndex = null;
       });
 
       _loadReplay(_latestRecording!.url);
@@ -670,8 +677,11 @@ $fillerTs
       if (_seenFillerKeys.add(key)) {
         final sec = (elapsedSec * ((item.index + 1) / totalWords))
             .clamp(0.0, elapsedSec);
-        _currentFillerTimeline
-            .add(FillerTimestamp(word: item.label, seconds: sec));
+        _currentFillerTimeline.add(FillerTimestamp(
+          word: item.label,
+          seconds: sec,
+          transcriptIndex: item.index,
+        ));
       }
     }
 
@@ -703,6 +713,7 @@ $fillerTs
       video.onTimeUpdate.listen((_) {
         if (_isScrubbingReplay) return;
         setState(() {
+          _forcedReplayWordIndex = null;
           _replayPositionSec = video.currentTime.toDouble();
         });
       });
@@ -728,12 +739,13 @@ $fillerTs
     }
   }
 
-  void _seekReplay(double seconds) {
+  void _seekReplay(double seconds, {int? transcriptIndex}) {
     final video = _replayVideoElement;
     if (video == null) return;
     video.currentTime = seconds.clamp(0, _replayDurationSec).toDouble();
     setState(() {
       _replayPositionSec = video.currentTime.toDouble();
+      _forcedReplayWordIndex = transcriptIndex;
     });
   }
 
@@ -1631,7 +1643,10 @@ $fillerTs
                         "${_formatMinutesSeconds(f.seconds)} • ${f.word}",
                         style: const TextStyle(color: Colors.white),
                       ),
-                      onPressed: () => _seekReplay(f.seconds),
+                      onPressed: () => _seekReplay(
+                        f.seconds,
+                        transcriptIndex: f.transcriptIndex,
+                      ),
                     );
                   }).toList(),
                 ),
@@ -1748,6 +1763,12 @@ $fillerTs
     final contentAnalysis = _analyzeContentFeedback();
     final contentScore = contentAnalysis.$1;
     final contentFeedback = contentAnalysis.$2;
+    final showingReplayTranscript =
+        _showReplayInMainCamera && _latestRecording != null;
+    final transcriptText =
+        showingReplayTranscript ? _latestRecording!.transcript : transcript;
+    final replayWordIndex =
+        showingReplayTranscript ? _currentReplayTranscriptWordIndex : null;
 
     return Card(
       child: Padding(
@@ -1755,7 +1776,10 @@ $fillerTs
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text("Live Transcript",
+            Text(
+                showingReplayTranscript
+                    ? "Replay Transcript"
+                    : "Live Transcript",
                 style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w800,
@@ -1804,12 +1828,23 @@ $fillerTs
                     Border.all(color: Colors.blueGrey.withValues(alpha: 0.4)),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: SelectableText(
-                transcript.isEmpty
-                    ? "Start speaking to see transcript..."
-                    : transcript,
-                style: const TextStyle(color: Colors.white, height: 1.4),
-              ),
+              child: transcriptText.isEmpty
+                  ? const Text(
+                      "Start speaking to see transcript...",
+                      style: TextStyle(color: Colors.white, height: 1.4),
+                    )
+                  : showingReplayTranscript
+                      ? RichText(
+                          text: _buildReplayTranscriptSpan(
+                            transcriptText,
+                            replayWordIndex,
+                          ),
+                        )
+                      : SelectableText(
+                          transcriptText,
+                          style:
+                              const TextStyle(color: Colors.white, height: 1.4),
+                        ),
             ),
             const SizedBox(height: 14),
             Text(
@@ -2495,12 +2530,65 @@ $fillerTs
     return "${score.toStringAsFixed(0)} / 100";
   }
 
+  int? get _currentReplayTranscriptWordIndex {
+    if (_forcedReplayWordIndex != null) return _forcedReplayWordIndex;
+    final recording = _latestRecording;
+    final duration = _effectiveReplayDurationSec;
+    if (recording == null ||
+        duration <= 0 ||
+        recording.transcript.trim().isEmpty) {
+      return null;
+    }
+
+    final totalWords = _tokenizeTranscript(recording.transcript).length;
+    if (totalWords == 0) return null;
+
+    final progress = (_replayPositionSec / duration).clamp(0.0, 0.9999);
+    return (progress * totalWords).floor();
+  }
+
   double get _currentConfidenceScore {
     return ((facePresencePct * 0.35) +
             (eyeContactPct * 0.45) +
             (headStabilityPct * 0.20))
         .clamp(0, 100)
         .toDouble();
+  }
+
+  TextSpan _buildReplayTranscriptSpan(String text, int? highlightWordIndex) {
+    final pieces = text.split(RegExp(r'(\s+)'));
+    final spans = <InlineSpan>[];
+    var wordIndex = 0;
+
+    for (final piece in pieces) {
+      if (piece.isEmpty) continue;
+      if (RegExp(r'^\s+$').hasMatch(piece)) {
+        spans.add(TextSpan(
+          text: piece,
+          style: const TextStyle(color: Colors.white, height: 1.55),
+        ));
+        continue;
+      }
+
+      final shouldHighlight =
+          highlightWordIndex != null && wordIndex == highlightWordIndex;
+      spans.add(
+        TextSpan(
+          text: piece,
+          style: TextStyle(
+            color: Colors.white,
+            height: 1.55,
+            fontWeight: shouldHighlight ? FontWeight.w800 : FontWeight.w500,
+            backgroundColor: shouldHighlight
+                ? const Color(0xFFFF8A3D).withValues(alpha: 0.42)
+                : null,
+          ),
+        ),
+      );
+      wordIndex++;
+    }
+
+    return TextSpan(children: spans);
   }
 
   String? get _highlightedTranscriptMoment {
