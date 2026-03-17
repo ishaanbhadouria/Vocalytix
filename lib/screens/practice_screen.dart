@@ -133,6 +133,16 @@ class _DetectedFiller {
   final int index;
 }
 
+class _TranscriptChunk {
+  const _TranscriptChunk({
+    required this.text,
+    required this.isWord,
+  });
+
+  final String text;
+  final bool isWord;
+}
+
 class PracticeScreen extends StatefulWidget {
   const PracticeScreen({super.key});
 
@@ -1769,6 +1779,9 @@ $fillerTs
         showingReplayTranscript ? _latestRecording!.transcript : transcript;
     final replayWordIndex =
         showingReplayTranscript ? _currentReplayTranscriptWordIndex : null;
+    final transcriptWordCount = showingReplayTranscript
+        ? _countTranscriptWords(transcriptText)
+        : wordCount;
 
     return Card(
       child: Padding(
@@ -1786,7 +1799,7 @@ $fillerTs
                     color: Colors.white)),
             const SizedBox(height: 8),
             Text(
-              "Words: $wordCount  •  Filler Rate: ${fillerRate.toStringAsFixed(1)}%  •  Confidence: ${confidenceScore.toStringAsFixed(0)}/100",
+              "Words: $transcriptWordCount  •  Filler Rate: ${fillerRate.toStringAsFixed(1)}%  •  Confidence: ${confidenceScore.toStringAsFixed(0)}/100",
               style: const TextStyle(color: Colors.white70, fontSize: 13),
             ),
             if (_highlightedTranscriptMoment != null) ...[
@@ -2540,7 +2553,7 @@ $fillerTs
       return null;
     }
 
-    final totalWords = _tokenizeTranscript(recording.transcript).length;
+    final totalWords = _countTranscriptWords(recording.transcript);
     if (totalWords == 0) return null;
 
     final progress = (_replayPositionSec / duration).clamp(0.0, 0.9999);
@@ -2556,15 +2569,15 @@ $fillerTs
   }
 
   TextSpan _buildReplayTranscriptSpan(String text, int? highlightWordIndex) {
-    final pieces = text.split(RegExp(r'(\s+)'));
+    final pieces = _transcriptChunks(text);
     final spans = <InlineSpan>[];
     var wordIndex = 0;
 
     for (final piece in pieces) {
-      if (piece.isEmpty) continue;
-      if (RegExp(r'^\s+$').hasMatch(piece)) {
+      if (piece.text.isEmpty) continue;
+      if (!piece.isWord) {
         spans.add(TextSpan(
-          text: piece,
+          text: piece.text,
           style: const TextStyle(color: Colors.white, height: 1.55),
         ));
         continue;
@@ -2574,7 +2587,7 @@ $fillerTs
           highlightWordIndex != null && wordIndex == highlightWordIndex;
       spans.add(
         TextSpan(
-          text: piece,
+          text: piece.text,
           style: TextStyle(
             color: Colors.white,
             height: 1.55,
@@ -2589,6 +2602,18 @@ $fillerTs
     }
 
     return TextSpan(children: spans);
+  }
+
+  int _countTranscriptWords(String text) {
+    return _transcriptChunks(text).where((chunk) => chunk.isWord).length;
+  }
+
+  List<_TranscriptChunk> _transcriptChunks(String text) {
+    return RegExp(r'\s+|[^\s]+').allMatches(text).map((match) {
+      final value = match.group(0) ?? "";
+      final hasWord = RegExp(r"[A-Za-z0-9']").hasMatch(value);
+      return _TranscriptChunk(text: value, isWord: hasWord);
+    }).toList();
   }
 
   String? get _highlightedTranscriptMoment {
@@ -2680,7 +2705,7 @@ $fillerTs
 
   List<String> _tokenizeTranscript(String text) {
     final lower = text.toLowerCase();
-    final cleaned = lower.replaceAll(RegExp(r"[^\w\s]"), " ");
+    final cleaned = lower.replaceAll(RegExp(r"[^\w\s'-]"), " ");
     return cleaned.split(RegExp(r"\s+")).where((w) => w.isNotEmpty).toList();
   }
 
