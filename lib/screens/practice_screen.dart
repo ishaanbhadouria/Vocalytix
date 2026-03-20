@@ -56,6 +56,7 @@ class SessionRecording {
     required this.score,
     required this.createdAt,
     required this.transcript,
+    required this.wordTimestampsSec,
     required this.fillerTimeline,
   });
 
@@ -64,6 +65,7 @@ class SessionRecording {
   final double score;
   final DateTime createdAt;
   final String transcript;
+  final List<double> wordTimestampsSec;
   final List<FillerTimestamp> fillerTimeline;
 }
 
@@ -207,6 +209,12 @@ class _PracticeScreenState extends State<PracticeScreen> {
   bool _showLoadingOverlay = true;
   bool _isSessionBooting = false;
   int _hintIndex = 0;
+  bool _showCameraReminder = true;
+  DateTime? _lastTranscriptUpdateAt;
+  List<double> _currentWordTimestampsSec = [];
+
+  static const String _cameraReminderStorageKey =
+      'vocalytix-hide-camera-reminder';
 
   static const List<String> _loadingHints = [
     "Look at the nose, not the eyes, for more natural eye contact.",
@@ -217,7 +225,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
 
   final Set<String> _singleWordFillers = const {
     "um",
+    "uhm",
     "uh",
+    "uhh",
     "so",
     "like",
     "thing",
@@ -229,6 +239,8 @@ class _PracticeScreenState extends State<PracticeScreen> {
     _initCameraPreview();
     _initReplayPreview();
     _beginLoadingOverlay(const Duration(milliseconds: 2200));
+    _showCameraReminder =
+        html.window.localStorage[_cameraReminderStorageKey] != 'true';
 
     html.window.addEventListener("speech-update", (event) {
       final customEvent = event as html.CustomEvent;
@@ -245,6 +257,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
           ? 0
           : DateTime.now().difference(startTime!).inSeconds;
       final now = DateTime.now();
+      _updateWordTimestamps(words.length, now);
       final deltaWords = (words.length - _lastLiveWordCount).clamp(0, 60);
       _lastLiveWordCount = words.length;
       if (deltaWords > 0) {
@@ -324,6 +337,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
             score: _pendingReportDialog?.overallScore ?? score,
             createdAt: DateTime.now(),
             transcript: transcript,
+            wordTimestampsSec: List<double>.from(_currentWordTimestampsSec),
             fillerTimeline: List<FillerTimestamp>.from(
               _pendingReportDialog?.fillerTimeline ?? _currentFillerTimeline,
             ),
@@ -417,6 +431,112 @@ class _PracticeScreenState extends State<PracticeScreen> {
     });
   }
 
+  void _updateWordTimestamps(int newWordCount, DateTime now) {
+    if (startTime == null) return;
+    if (newWordCount <= _currentWordTimestampsSec.length) {
+      _lastTranscriptUpdateAt = now;
+      return;
+    }
+
+    final previousCount = _currentWordTimestampsSec.length;
+    final newWords = newWordCount - previousCount;
+    final elapsedSec = now.difference(startTime!).inMilliseconds / 1000.0;
+    final previousUpdateAt = _lastTranscriptUpdateAt;
+    final previousSec = previousUpdateAt == null
+        ? 0.0
+        : previousUpdateAt.difference(startTime!).inMilliseconds / 1000.0;
+    final startSec = previousCount == 0 ? 0.0 : previousSec;
+    final span = (elapsedSec - startSec).clamp(0.0, 6.0);
+
+    for (var i = 0; i < newWords; i++) {
+      final ratio = newWords == 1 ? 1.0 : (i + 1) / newWords;
+      final sec = (startSec + (span * ratio)).clamp(0.0, elapsedSec);
+      _currentWordTimestampsSec.add(sec);
+    }
+
+    _lastTranscriptUpdateAt = now;
+  }
+
+  Future<void> _handleStartSpeaking() async {
+    if (isListening) return;
+    if (_showCameraReminder) {
+      final shouldContinue = await _showCameraReminderDialog();
+      if (!shouldContinue) return;
+    }
+    startSpeaking();
+  }
+
+  Future<bool> _showCameraReminderDialog() async {
+    var dontShowAgain = false;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF111A33),
+              title: const Text(
+                "Before You Record",
+                style: TextStyle(color: Colors.white),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Make sure you can see your whole face and gestures in the camera frame :)",
+                    style: TextStyle(color: Colors.white70, height: 1.45),
+                  ),
+                  const SizedBox(height: 14),
+                  CheckboxListTile(
+                    value: dontShowAgain,
+                    onChanged: (value) {
+                      setDialogState(() {
+                        dontShowAgain = value ?? false;
+                      });
+                    },
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    activeColor: const Color(0xFFE86D1F),
+                    title: const Text(
+                      "Don't show this again",
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text("Cancel"),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFE86D1F),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text("Start Recording"),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == true && dontShowAgain) {
+      html.window.localStorage[_cameraReminderStorageKey] = 'true';
+      setState(() {
+        _showCameraReminder = false;
+      });
+    }
+
+    return result ?? false;
+  }
+
   void startSpeaking() {
     startTime = DateTime.now();
     setState(() {
@@ -443,6 +563,8 @@ class _PracticeScreenState extends State<PracticeScreen> {
       _lastLiveWordCount = 0;
       _liveWordSamples.clear();
       _sessionElapsedSec = 0;
+      _currentWordTimestampsSec = [];
+      _lastTranscriptUpdateAt = null;
     });
     _beginLoadingOverlay(const Duration(milliseconds: 2600));
     _paceRefreshTimer?.cancel();
@@ -1498,7 +1620,7 @@ $fillerTs
                     alignment: WrapAlignment.end,
                     children: [
                       FilledButton.icon(
-                        onPressed: isListening ? null : startSpeaking,
+                        onPressed: isListening ? null : _handleStartSpeaking,
                         style: FilledButton.styleFrom(
                           backgroundColor: const Color(0xFFDC2626),
                           foregroundColor: Colors.white,
@@ -2546,13 +2668,20 @@ $fillerTs
   int? get _currentReplayTranscriptWordIndex {
     if (_forcedReplayWordIndex != null) return _forcedReplayWordIndex;
     final recording = _latestRecording;
-    final duration = _effectiveReplayDurationSec;
-    if (recording == null ||
-        duration <= 0 ||
-        recording.transcript.trim().isEmpty) {
+    if (recording == null || recording.transcript.trim().isEmpty) {
       return null;
     }
 
+    final wordTimestamps = recording.wordTimestampsSec;
+    if (wordTimestamps.isNotEmpty) {
+      for (var i = wordTimestamps.length - 1; i >= 0; i--) {
+        if (_replayPositionSec >= wordTimestamps[i]) return i;
+      }
+      return 0;
+    }
+
+    final duration = _effectiveReplayDurationSec;
+    if (duration <= 0) return null;
     final totalWords = _countTranscriptWords(recording.transcript);
     if (totalWords == 0) return null;
 
