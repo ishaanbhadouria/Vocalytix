@@ -1016,8 +1016,7 @@ $fillerTs
 
   List<String> _buildCoachingFeedback(double fillerRate) {
     final feedback = <String>[];
-    feedback.add(
-        "You did a good job leaning into ${_modeLabel(selectedMode).toLowerCase()} mode.");
+    feedback.add("${_modeLabel(selectedMode)} goal: ${_modeCoreGoal()}.");
 
     if (wordCount < 20) {
       feedback.add("Run a longer rep (30-60s) to get more reliable scoring.");
@@ -1039,12 +1038,6 @@ $fillerTs
           "Fillers are high. Pause silently instead of using filler words.");
     } else if (fillerRate <= 3 && wordCount >= 20) {
       feedback.add("Great verbal control. Fillers are low.");
-    }
-
-    final transcriptMoment = _highlightedTranscriptMoment;
-    if (transcriptMoment != null) {
-      feedback.add(
-          'Strong moment: "$transcriptMoment" gives you something worth keeping.');
     }
 
     if (eyeContactPct < 65) {
@@ -1147,6 +1140,9 @@ $fillerTs
     final lower = text.toLowerCase();
     final words =
         lower.split(RegExp(r"\s+")).where((w) => w.isNotEmpty).toList();
+    final sentences = _splitSentences(text);
+    final firstSentence = sentences.isEmpty ? "" : sentences.first;
+    final lastSentence = sentences.isEmpty ? "" : sentences.last;
     final wordTotal = words.length;
 
     final lengthScore = wordTotal < 20
@@ -1210,39 +1206,59 @@ $fillerTs
         .toDouble();
 
     final feedback = <String>[];
-    if (wordTotal < 30) {
-      feedback.add(
-          "Give longer responses (45-90 seconds) so your message feels complete.");
-    } else {
-      feedback.add("Response length is solid for analysis.");
-    }
+    final openingNeedsWork = _hasWeakOpening(firstSentence);
+    final hedgingHits = _countPhraseHits(lower, const [
+      "i think",
+      "i guess",
+      "maybe",
+      "kind of",
+      "sort of",
+      "probably",
+      "i feel like",
+    ]);
+    final strongestSentence = _bestSentence(sentences);
+    final longSentence = _firstLongSentence(sentences);
+    final hasConclusion = _hasConclusionCue(lastSentence);
+    final repetitionWord = _mostRepeatedMeaningfulWord(words);
 
-    final transcriptMoment = _highlightedTranscriptMoment;
-    if (transcriptMoment != null) {
-      feedback
-          .add('You did a really good job when you said "$transcriptMoment".');
-    }
-
-    if (structureScore < 70) {
+    if (openingNeedsWork && firstSentence.isNotEmpty) {
       feedback.add(
-          "Add stronger structure: start with your point, then one example, then result.");
-    } else {
-      feedback.add("Your structure is clear and easy to follow.");
+          'Your opening is soft: "${_clipQuote(firstSentence)}". Start with the answer or main point first, then explain it.');
+    } else if (firstSentence.isNotEmpty) {
+      feedback.add(
+          'Your opening gives direction quickly: "${_clipQuote(firstSentence)}". Keep that kind of direct start.');
     }
 
     if (specificityScore < 70) {
+      final referenceSentence =
+          strongestSentence.isNotEmpty ? strongestSentence : firstSentence;
       feedback.add(
-          "Add concrete evidence: numbers, outcomes, or a specific scenario.");
-    } else {
-      feedback.add("Good specificity. You used concrete details well.");
+          'You make a claim in "${_clipQuote(referenceSentence)}", but it needs one concrete result, number, or example to feel convincing.');
+    } else if (strongestSentence.isNotEmpty) {
+      feedback.add(
+          'The strongest part is "${_clipQuote(strongestSentence)}" because it sounds specific instead of vague.');
     }
 
-    if (modeFitScore < 68) {
+    if (hedgingHits >= 2) {
       feedback.add(
-          "Use more ${_modeLabel(selectedMode).toLowerCase()}-specific language for stronger alignment.");
-    } else {
-      feedback
-          .add("Content aligns well with ${_modeLabel(selectedMode)} mode.");
+          "You hedge too much with phrases like 'maybe' or 'I think'. Say the point more directly so you sound more certain.");
+    } else if (longSentence.isNotEmpty) {
+      feedback.add(
+          'This sentence runs long: "${_clipQuote(longSentence)}". Split it into two shorter ideas so the listener can follow you more easily.');
+    } else if (structureScore < 70) {
+      feedback.add(
+          "Your ideas are there, but the structure is loose. Use a cleaner order: point, example, result.");
+    }
+
+    if (!hasConclusion && lastSentence.isNotEmpty) {
+      feedback.add(
+          'The ending feels unfinished: "${_clipQuote(lastSentence)}". Add one closing line that states the takeaway or result.');
+    } else if (repetitionWord != null) {
+      feedback.add(
+          "You lean on '$repetitionWord' a lot. Swap in more precise wording so the answer sounds sharper.");
+    } else if (modeFitScore < 68) {
+      feedback.add(
+          "The answer would feel stronger if it used more ${_modeLabel(selectedMode).toLowerCase()}-specific language.");
     }
 
     if (selectedMode == CoachingMode.interview &&
@@ -1251,7 +1267,15 @@ $fillerTs
             lower.contains("action") ||
             lower.contains("result"))) {
       feedback.add(
-          "For interview answers, use STAR flow: Situation, Task, Action, Result.");
+          "For interview answers, you still need a clearer STAR shape: situation, action, and measurable result.");
+    }
+
+    if (selectedMode == CoachingMode.presentation &&
+        !lower.contains("takeaway") &&
+        !lower.contains("recommendation") &&
+        !hasConclusion) {
+      feedback.add(
+          "For presentation mode, land the message with a takeaway or recommendation instead of stopping after explanation.");
     }
 
     return (contentScore, feedback.take(4).toList());
@@ -2658,6 +2682,143 @@ $fillerTs
     return "${min.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}";
   }
 
+  List<String> _splitSentences(String text) {
+    return text
+        .split(RegExp(r'(?<=[.!?])\s+'))
+        .map((sentence) => sentence.trim())
+        .where((sentence) => sentence.isNotEmpty)
+        .toList();
+  }
+
+  bool _hasWeakOpening(String sentence) {
+    final lower = sentence.toLowerCase().trim();
+    if (lower.isEmpty) return true;
+    return lower.startsWith("so ") ||
+        lower.startsWith("um") ||
+        lower.startsWith("uh") ||
+        lower.startsWith("i guess") ||
+        lower.startsWith("maybe") ||
+        lower.startsWith("today i'm going to") ||
+        lower.startsWith("i want to talk about");
+  }
+
+  int _countPhraseHits(String text, List<String> phrases) {
+    var hits = 0;
+    for (final phrase in phrases) {
+      hits += RegExp(RegExp.escape(phrase)).allMatches(text).length;
+    }
+    return hits;
+  }
+
+  String _bestSentence(List<String> sentences) {
+    if (sentences.isEmpty) return "";
+    var best = "";
+    var bestScore = -1;
+
+    for (final sentence in sentences) {
+      final lower = sentence.toLowerCase();
+      var score = 0;
+      if (RegExp(r"\b\d+(\.\d+)?\b").hasMatch(lower)) score += 3;
+      if (lower.contains("for example") || lower.contains("specifically")) {
+        score += 2;
+      }
+      if (lower.contains("result") ||
+          lower.contains("impact") ||
+          lower.contains("improved") ||
+          lower.contains("increased") ||
+          lower.contains("reduced")) {
+        score += 2;
+      }
+      if (sentence.split(RegExp(r"\s+")).length >= 8) score += 1;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = sentence;
+      }
+    }
+
+    return best;
+  }
+
+  String _firstLongSentence(List<String> sentences) {
+    for (final sentence in sentences) {
+      if (sentence.split(RegExp(r"\s+")).length >= 24) {
+        return sentence;
+      }
+    }
+    return "";
+  }
+
+  bool _hasConclusionCue(String sentence) {
+    final lower = sentence.toLowerCase();
+    return lower.contains("that's why") ||
+        lower.contains("the takeaway") ||
+        lower.contains("in summary") ||
+        lower.contains("overall") ||
+        lower.contains("so the result") ||
+        lower.contains("for that reason") ||
+        lower.contains("which is why");
+  }
+
+  String? _mostRepeatedMeaningfulWord(List<String> words) {
+    final counts = <String, int>{};
+    const ignore = {
+      "the",
+      "and",
+      "that",
+      "this",
+      "with",
+      "have",
+      "from",
+      "your",
+      "just",
+      "like",
+      "really",
+      "very",
+      "about",
+      "because",
+      "they",
+      "them",
+      "then",
+      "when",
+      "what",
+      "would",
+      "could",
+      "there",
+      "their",
+      "were",
+      "been",
+      "into",
+      "also",
+      "some",
+      "more",
+    };
+
+    for (final raw in words) {
+      final word = raw.replaceAll(RegExp(r"[^a-z0-9']"), "");
+      if (word.length < 4 || ignore.contains(word)) continue;
+      counts[word] = (counts[word] ?? 0) + 1;
+    }
+
+    String? bestWord;
+    var bestCount = 0;
+    counts.forEach((word, count) {
+      if (count > bestCount) {
+        bestCount = count;
+        bestWord = word;
+      }
+    });
+
+    if (bestCount < 4) return null;
+    return bestWord;
+  }
+
+  String _clipQuote(String sentence) {
+    final trimmed = sentence.trim();
+    if (trimmed.length <= 110) return trimmed;
+    return "${trimmed.substring(0, 107)}...";
+  }
+
   String get _scoreDisplay {
     if (wordCount < 8) return "TBD / 100";
     return "${score.toStringAsFixed(0)} / 100";
@@ -2681,18 +2842,6 @@ $fillerTs
       final hasWord = RegExp(r"[A-Za-z0-9']").hasMatch(value);
       return _TranscriptChunk(text: value, isWord: hasWord);
     }).toList();
-  }
-
-  String? get _highlightedTranscriptMoment {
-    final trimmed = transcript.trim();
-    if (trimmed.isEmpty) return null;
-    final parts = trimmed
-        .split(RegExp(r'(?<=[.!?])\s+'))
-        .where((part) => part.trim().isNotEmpty)
-        .toList();
-    if (parts.isEmpty) return null;
-    final best = parts.reduce((a, b) => a.length >= b.length ? a : b).trim();
-    return best.length > 120 ? "${best.substring(0, 117)}..." : best;
   }
 
   Widget _buildLoadingOverlay() {
