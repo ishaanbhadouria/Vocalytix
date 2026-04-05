@@ -1,0 +1,15 @@
+.dart_tool
+.git
+.github
+.idea
+.vscode
+build
+coverage
+ios/Pods
+macos/Pods
+linux/flutter/ephemeral
+windows/flutter/ephemeral
+android/.gradle
+android/app/build
+ios/Flutter/ephemeral
+macos/Flutter/ephemeral
