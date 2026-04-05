@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
+
+import 'services/supabase_bootstrap.dart';
 import 'screens/practice_screen.dart';
 
-void main() {
-  runApp(const VocalytixApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SupabaseBootstrap.initialize();
+  runApp(const AvaixaApp());
 }
 
-class VocalytixApp extends StatelessWidget {
-  const VocalytixApp({super.key});
+class AvaixaApp extends StatelessWidget {
+  const AvaixaApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Vocalytix',
+      title: 'Avaixa',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFFFF8A3D),

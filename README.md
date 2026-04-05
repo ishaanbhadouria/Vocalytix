@@ -1,6 +1,6 @@
-# Avaixia
+# Avaixa
 
-Avaixia is a Flutter web app for presentation and interview practice. It uses
+Avaixa is a Flutter web app for presentation and interview practice. It uses
 browser speech recognition, camera access, and client-side session analysis.
 
 ## Local Development
@@ -78,7 +78,7 @@ that option so Flutter can compile them into the web bundle.
 docker build \
   --build-arg SUPABASE_URL=YOUR_PROJECT_URL \
   --build-arg SUPABASE_ANON_KEY=YOUR_ANON_KEY \
-  -t avaixia-web .
+  -t avaixa-web .
 ```
 
 ## Browser Requirements

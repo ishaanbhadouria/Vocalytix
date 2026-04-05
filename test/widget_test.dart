@@ -1,11 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:vocalytix/main.dart';
+import 'package:avaixa/main.dart';
 
 void main() {
-  testWidgets('App renders Vocalytix practice screen', (WidgetTester tester) async {
-    await tester.pumpWidget(const VocalytixApp());
+  testWidgets('App renders Avaixa shell', (WidgetTester tester) async {
+    await tester.pumpWidget(const AvaixaApp());
 
-    expect(find.text('Vocalytix Practice'), findsOneWidget);
-    expect(find.text('Start Speaking'), findsOneWidget);
+    expect(find.text('Select Your Speaking Context'), findsOneWidget);
+    expect(find.text('Avaixa'), findsWidgets);
   });
 }

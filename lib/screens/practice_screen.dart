@@ -4,116 +4,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:vocalytix/widgets/session_trend_chart.dart';
-import 'package:vocalytix/widgets/vocalytix_brand.dart';
+import 'package:avaixa/models/session_models.dart';
+import 'package:avaixa/services/local_session_store.dart';
+import 'package:avaixa/widgets/avaixa_brand.dart';
+import 'package:avaixa/widgets/session_trend_chart.dart';
 import 'dart:html' as html;
 import 'dart:js' as js;
 import 'dart:ui_web' as ui_web;
-
-enum CoachingMode {
-  interview,
-  presentation,
-  speech,
-  informal,
-  formal,
-  tutorials
-}
-
-enum SessionOutcome { offer, advanced, rejected, unknown }
-
-enum DetailFilter { overview, gestures, outcomes, all }
-
-class FillerTimestamp {
-  const FillerTimestamp({
-    required this.word,
-    required this.seconds,
-    required this.transcriptIndex,
-  });
-
-  final String word;
-  final double seconds;
-  final int transcriptIndex;
-}
-
-class SessionLog {
-  const SessionLog({
-    required this.mode,
-    required this.score,
-    required this.outcome,
-    required this.timestamp,
-  });
-
-  final CoachingMode mode;
-  final double score;
-  final SessionOutcome outcome;
-  final DateTime timestamp;
-}
-
-class SessionRecording {
-  const SessionRecording({
-    required this.url,
-    required this.mode,
-    required this.score,
-    required this.createdAt,
-    required this.transcript,
-    required this.wordTimestampsSec,
-    required this.fillerTimeline,
-  });
-
-  final String url;
-  final CoachingMode mode;
-  final double score;
-  final DateTime createdAt;
-  final String transcript;
-  final List<double> wordTimestampsSec;
-  final List<FillerTimestamp> fillerTimeline;
-}
-
-class SessionReport {
-  const SessionReport({
-    required this.mode,
-    required this.createdAt,
-    required this.overallScore,
-    required this.contentScore,
-    required this.paceLabel,
-    required this.confidenceLabel,
-    required this.wordCount,
-    required this.wpm,
-    required this.fillerCount,
-    required this.fillerRate,
-    required this.confidenceScore,
-    required this.facePresence,
-    required this.eyeContact,
-    required this.headStability,
-    required this.gestureRating,
-    required this.gestureMoments,
-    required this.visualMessage,
-    required this.voiceFeedback,
-    required this.contentFeedback,
-    required this.fillerTimeline,
-  });
-
-  final CoachingMode mode;
-  final DateTime createdAt;
-  final double overallScore;
-  final double contentScore;
-  final String paceLabel;
-  final String confidenceLabel;
-  final int wordCount;
-  final double wpm;
-  final int fillerCount;
-  final double fillerRate;
-  final double confidenceScore;
-  final double facePresence;
-  final double eyeContact;
-  final double headStability;
-  final String gestureRating;
-  final int gestureMoments;
-  final String visualMessage;
-  final List<String> voiceFeedback;
-  final List<String> contentFeedback;
-  final List<FillerTimestamp> fillerTimeline;
-}
 
 class _WordSample {
   const _WordSample({
@@ -153,11 +50,12 @@ class PracticeScreen extends StatefulWidget {
 }
 
 class _PracticeScreenState extends State<PracticeScreen> {
-  static const String _cameraViewType = 'vocalytix-camera-preview';
-  static const String _cameraElementIdPrefix = 'vocalytix-camera-element';
+  static const String _cameraViewType = 'avaixa-camera-preview';
+  static const String _cameraElementIdPrefix = 'avaixa-camera-element';
   static bool _cameraFactoryRegistered = false;
-  static const String _replayViewType = 'vocalytix-replay-video';
+  static const String _replayViewType = 'avaixa-replay-video';
   static bool _replayFactoryRegistered = false;
+  final LocalSessionStore _sessionStore = LocalSessionStore();
 
   int wordCount = 0;
   int fillerCount = 0;
@@ -184,6 +82,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
   SessionReport? _pendingReportDialog;
   int activeTabIndex = 0;
   bool hasSelectedMode = false;
+  bool _homeLiveAudienceSelected = false;
   int tutorialPromptIndex = 0;
   DetailFilter selectedDetailFilter = DetailFilter.overview;
   int _lastProcessedWords = 0;
@@ -198,6 +97,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
   String? _pendingReplayUrl;
   bool _showReplayInMainCamera = false;
   bool _isScrubbingReplay = false;
+  bool _resumeReplayAfterScrub = false;
   final List<_WordSample> _liveWordSamples = [];
   Timer? _paceRefreshTimer;
   Timer? _sessionTimer;
@@ -211,9 +111,23 @@ class _PracticeScreenState extends State<PracticeScreen> {
   bool _showCameraReminder = true;
   DateTime? _lastTranscriptUpdateAt;
   List<double> _currentWordTimestampsSec = [];
+  double _mockAudienceEnergy = 0.65;
+  double _mockAudienceWarmth = 0.72;
+  int _mockAudienceSize = 18;
+  bool _liveAudienceImmersive = false;
+  DateTime? _lastSpeechUiRefreshAt;
+  DateTime? _lastFaceUiRefreshAt;
+  int _lastSpeechUiWordCount = 0;
+  double _cachedContentScore = 0;
+  List<String> _cachedContentFeedback = const [
+    "Start speaking to generate content-level feedback.",
+  ];
+
+  static const Duration _speechUiRefreshInterval = Duration(milliseconds: 220);
+  static const Duration _faceUiRefreshInterval = Duration(milliseconds: 180);
 
   static const String _cameraReminderStorageKey =
-      'vocalytix-hide-camera-reminder';
+      'avaixa-hide-camera-reminder';
 
   static const List<String> _loadingHints = [
     "Look at the nose, not the eyes, for more natural eye contact.",
@@ -227,6 +141,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
     "uhm",
     "uh",
     "uhh",
+    "uhhh",
     "so",
     "like",
     "thing",
@@ -238,12 +153,14 @@ class _PracticeScreenState extends State<PracticeScreen> {
     _initCameraPreview();
     _initReplayPreview();
     _beginLoadingOverlay(const Duration(milliseconds: 2200));
+    _restorePersistedSessionData();
     _showCameraReminder =
         html.window.localStorage[_cameraReminderStorageKey] != 'true';
 
     html.window.addEventListener("speech-update", (event) {
       final customEvent = event as html.CustomEvent;
       final transcript = customEvent.detail as String;
+      if (transcript == this.transcript) return;
 
       final words = transcript.trim().isEmpty
           ? []
@@ -264,19 +181,23 @@ class _PracticeScreenState extends State<PracticeScreen> {
       }
       _trimWordSamples(now);
       final liveWpm = _computeLiveWpm(now);
+      final shouldRefreshUi = _shouldRefreshSpeechUi(now, words.length);
 
-      setState(() {
-        this.transcript = transcript;
-        wordCount = words.length;
-        fillerCount = fillersDetected.length;
-        status = "Speaking";
-        wordsPerMinute = liveWpm > 0
-            ? liveWpm
-            : (seconds > 0 ? (wordCount / seconds) * 60 : 0);
-        score = _calculateScore();
-      });
-
+      this.transcript = transcript;
+      wordCount = words.length;
+      fillerCount = fillersDetected.length;
+      status = "Speaking";
+      wordsPerMinute = liveWpm > 0
+          ? liveWpm
+          : (seconds > 0 ? (wordCount / seconds) * 60 : 0);
       _updateFillerTimeline(transcript);
+      if (shouldRefreshUi) {
+        _refreshCachedContentAnalysis();
+        setState(() {
+          score = _calculateScore();
+          _lastSpeechUiRefreshAt = now;
+        });
+      }
     });
 
     html.window.addEventListener("speech-stopped", (_) {
@@ -292,16 +213,24 @@ class _PracticeScreenState extends State<PracticeScreen> {
       if (detail is! String || detail.isEmpty) return;
 
       final payload = jsonDecode(detail) as Map<String, dynamic>;
+      final now = DateTime.now();
+      facePresencePct = _num(payload["facePresencePct"]);
+      eyeContactPct = _num(payload["eyeContactPct"]);
+      headStabilityPct = _num(payload["headStabilityPct"]);
+      gestureActivityPct = _num(payload["gestureActivityPct"]);
+      gestureFrames = (_num(payload["gestureFrames"])).round();
+      final hasFace = payload["faceDetected"] == true;
+      faceStatus = hasFace ? "Face Detected" : "Face Missing";
+      visualMessage = _buildVisualMessage();
+
+      final shouldRefreshUi = _isSessionBooting ||
+          _lastFaceUiRefreshAt == null ||
+          now.difference(_lastFaceUiRefreshAt!) >= _faceUiRefreshInterval;
+      if (!shouldRefreshUi) return;
+
       setState(() {
-        facePresencePct = _num(payload["facePresencePct"]);
-        eyeContactPct = _num(payload["eyeContactPct"]);
-        headStabilityPct = _num(payload["headStabilityPct"]);
-        gestureActivityPct = _num(payload["gestureActivityPct"]);
-        gestureFrames = (_num(payload["gestureFrames"])).round();
-        final hasFace = payload["faceDetected"] == true;
-        faceStatus = hasFace ? "Face Detected" : "Face Missing";
-        visualMessage = _buildVisualMessage();
         score = _calculateScore();
+        _lastFaceUiRefreshAt = now;
         if (_isSessionBooting) {
           _isSessionBooting = false;
           _showLoadingOverlay = false;
@@ -365,6 +294,27 @@ class _PracticeScreenState extends State<PracticeScreen> {
         });
       }
     });
+  }
+
+  Future<void> _restorePersistedSessionData() async {
+    final persisted = await _sessionStore.load();
+    if (!mounted) return;
+    setState(() {
+      _sessionLogs
+        ..clear()
+        ..addAll(persisted.logs);
+      _sessionReports
+        ..clear()
+        ..addAll(persisted.reports);
+    });
+  }
+
+  Future<void> _persistReports() {
+    return _sessionStore.saveReports(_sessionReports);
+  }
+
+  Future<void> _persistLogs() {
+    return _sessionStore.saveLogs(_sessionLogs);
   }
 
   void _initCameraPreview() {
@@ -566,6 +516,13 @@ class _PracticeScreenState extends State<PracticeScreen> {
       _sessionElapsedSec = 0;
       _currentWordTimestampsSec = [];
       _lastTranscriptUpdateAt = null;
+      _lastSpeechUiRefreshAt = null;
+      _lastFaceUiRefreshAt = null;
+      _lastSpeechUiWordCount = 0;
+      _cachedContentScore = 0;
+      _cachedContentFeedback = const [
+        "Start speaking to generate content-level feedback.",
+      ];
     });
     _beginLoadingOverlay(const Duration(milliseconds: 2600));
     _paceRefreshTimer?.cancel();
@@ -633,6 +590,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
         _pendingReportDialog = latestReport;
       }
     });
+    if (latestReport != null) {
+      unawaited(_persistReports());
+    }
 
     if (latestReport != null) {
       Future.delayed(const Duration(milliseconds: 1400), () {
@@ -669,6 +629,21 @@ class _PracticeScreenState extends State<PracticeScreen> {
       wordsPerMinute = liveWpm;
       score = _calculateScore();
     });
+  }
+
+  bool _shouldRefreshSpeechUi(DateTime now, int currentWordCount) {
+    if (_lastSpeechUiRefreshAt == null) return true;
+    if (now.difference(_lastSpeechUiRefreshAt!) >= _speechUiRefreshInterval) {
+      return true;
+    }
+    return (currentWordCount - _lastSpeechUiWordCount).abs() >= 6;
+  }
+
+  void _refreshCachedContentAnalysis() {
+    final contentAnalysis = _analyzeContentFeedback();
+    _cachedContentScore = contentAnalysis.$1;
+    _cachedContentFeedback = contentAnalysis.$2;
+    _lastSpeechUiWordCount = wordCount;
   }
 
   @override
@@ -715,33 +690,236 @@ class _PracticeScreenState extends State<PracticeScreen> {
     await showDialog<void>(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF111A33),
-          title: Text(
-            "Full Session Report • ${_modeLabel(report.mode)}",
-            style: const TextStyle(color: Colors.white),
-          ),
-          content: SizedBox(
-            width: 680,
-            child: SingleChildScrollView(
-              child: SelectableText(
-                reportText,
-                style: const TextStyle(color: Colors.white70, height: 1.4),
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 860, maxHeight: 760),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(28),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF141F3F), Color(0xFF0B1020)],
+              ),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF000000).withValues(alpha: 0.34),
+                  blurRadius: 30,
+                  offset: const Offset(0, 18),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(22),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFF8A3D)
+                                      .withValues(alpha: 0.16),
+                                  borderRadius: BorderRadius.circular(999),
+                                  border: Border.all(
+                                    color: const Color(0xFFFF8A3D)
+                                        .withValues(alpha: 0.22),
+                                  ),
+                                ),
+                                child: Text(
+                                  _modeLabel(report.mode),
+                                  style: const TextStyle(
+                                    color: Color(0xFFFFC48B),
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              const Text(
+                                "Session Report",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 28,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                "Generated ${report.createdAt.toLocal()}",
+                                style: const TextStyle(
+                                  color: Colors.white60,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          style: IconButton.styleFrom(
+                            backgroundColor:
+                                Colors.white.withValues(alpha: 0.06),
+                          ),
+                          icon: const Icon(Icons.close_rounded,
+                              color: Colors.white),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    _buildReportHero(report),
+                    const SizedBox(height: 18),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        _buildReportMetricTile(
+                          "Pace",
+                          report.paceLabel,
+                          "${report.wpm.toStringAsFixed(0)} WPM",
+                          const Color(0xFF38BDF8),
+                        ),
+                        _buildReportMetricTile(
+                          "Confidence",
+                          report.confidenceLabel,
+                          "${report.confidenceScore.toStringAsFixed(0)}/100",
+                          const Color(0xFFFFB347),
+                        ),
+                        _buildReportMetricTile(
+                          "Fillers",
+                          report.fillerCount.toString(),
+                          "${report.fillerRate.toStringAsFixed(1)}% rate",
+                          const Color(0xFFEF4444),
+                        ),
+                        _buildReportMetricTile(
+                          "Words",
+                          report.wordCount.toString(),
+                          "",
+                          const Color(0xFF14B8A6),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final stacked = constraints.maxWidth < 720;
+                        final voiceCard = _buildReportSectionCard(
+                          title: "Voice Coaching",
+                          accent: const Color(0xFFFF8A3D),
+                          icon: Icons.graphic_eq_rounded,
+                          child: _buildReportFeedbackList(report.voiceFeedback),
+                        );
+                        final contentCard = _buildReportSectionCard(
+                          title: "Content Coaching",
+                          accent: const Color(0xFF38BDF8),
+                          icon: Icons.edit_note_rounded,
+                          child:
+                              _buildReportFeedbackList(report.contentFeedback),
+                        );
+                        if (stacked) {
+                          return Column(
+                            children: [
+                              voiceCard,
+                              const SizedBox(height: 12),
+                              contentCard,
+                            ],
+                          );
+                        }
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: voiceCard),
+                            const SizedBox(width: 12),
+                            Expanded(child: contentCard),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 18),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final stacked = constraints.maxWidth < 720;
+                        final visualCard = _buildReportSectionCard(
+                          title: "Visual Presence",
+                          accent: const Color(0xFFFFB347),
+                          icon: Icons.videocam_rounded,
+                          child: Column(
+                            children: [
+                              _reportStatRow("Face Presence",
+                                  "${report.facePresence.toStringAsFixed(1)}%"),
+                              _reportStatRow("Eye Contact",
+                                  "${report.eyeContact.toStringAsFixed(1)}%"),
+                              _reportStatRow("Head Stability",
+                                  "${report.headStability.toStringAsFixed(1)}%"),
+                              _reportStatRow(
+                                  "Gesture Rating", report.gestureRating),
+                              _reportStatRow("Gesture Moments",
+                                  report.gestureMoments.toString()),
+                            ],
+                          ),
+                        );
+                        final fillerCard = _buildReportSectionCard(
+                          title: "Filler Timeline",
+                          accent: const Color(0xFFEF4444),
+                          icon: Icons.schedule_rounded,
+                          child: _buildReportFillerTimeline(report),
+                        );
+                        if (stacked) {
+                          return Column(
+                            children: [
+                              visualCard,
+                              const SizedBox(height: 12),
+                              fillerCard,
+                            ],
+                          );
+                        }
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: visualCard),
+                            const SizedBox(width: 12),
+                            Expanded(child: fillerCard),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        TextButton.icon(
+                          onPressed: () async {
+                            await Clipboard.setData(
+                                ClipboardData(text: reportText));
+                          },
+                          icon: const Icon(Icons.copy_all_rounded),
+                          label: const Text("Copy Report"),
+                        ),
+                        const Spacer(),
+                        FilledButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFE86D1F),
+                            foregroundColor: Colors.white,
+                          ),
+                          child: const Text("Close"),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: reportText));
-              },
-              child: const Text("Copy Report"),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text("Close"),
-            ),
-          ],
         );
       },
     );
@@ -788,6 +966,321 @@ ${r.contentFeedback.map((e) => "- $e").join("\n")}
 FILLER TIMESTAMPS
 $fillerTs
 """;
+  }
+
+  Widget _buildReportHero(SessionReport report) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(22),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFFF8A3D), Color(0xFF203A73)],
+        ),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final stacked = constraints.maxWidth < 620;
+          final scoreColumn = Row(
+            children: [
+              _buildHeroScore(
+                "Overall",
+                report.overallScore.toStringAsFixed(0),
+                "out of 100",
+              ),
+              const SizedBox(width: 14),
+              _buildHeroScore(
+                "Content",
+                report.contentScore.toStringAsFixed(0),
+                "content score",
+              ),
+            ],
+          );
+          final summary = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                "Strongest takeaway",
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                report.contentFeedback.isNotEmpty
+                    ? report.contentFeedback.first
+                    : report.voiceFeedback.firstOrNull ??
+                        "Keep refining your message and delivery together.",
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          );
+          if (stacked) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                scoreColumn,
+                const SizedBox(height: 16),
+                summary,
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: scoreColumn),
+              const SizedBox(width: 18),
+              Expanded(child: summary),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildHeroScore(String label, String score, String caption) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              score,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 34,
+                fontWeight: FontWeight.w900,
+                height: 1,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              caption,
+              style: const TextStyle(color: Colors.white70),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReportMetricTile(
+      String label, String value, String subtitle, Color accent) {
+    final hasSubtitle = subtitle.trim().isNotEmpty;
+    return Container(
+      width: 190,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0E172F),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accent.withValues(alpha: 0.22)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          if (hasSubtitle) ...[
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white60, height: 1.35),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReportSectionCard({
+    required String title,
+    required Color accent,
+    required IconData icon,
+    required Widget child,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0E172F),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: accent.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: accent),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReportFeedbackList(List<String> items) {
+    if (items.isEmpty) {
+      return const Text(
+        "No feedback available yet.",
+        style: TextStyle(color: Colors.white60),
+      );
+    }
+    return Column(
+      children: items
+          .map(
+            (item) => Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Icon(Icons.check_circle_rounded,
+                        color: Color(0xFFFF8A3D), size: 18),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      item,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        height: 1.42,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
+
+  Widget _buildReportFillerTimeline(SessionReport report) {
+    if (report.fillerTimeline.isEmpty) {
+      return const Text(
+        "No filler timestamps detected in this session.",
+        style: TextStyle(color: Colors.white60, height: 1.4),
+      );
+    }
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: report.fillerTimeline
+          .take(20)
+          .map(
+            (filler) => Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF25131A),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                    color: const Color(0xFFEF4444).withValues(alpha: 0.2)),
+              ),
+              child: Text(
+                "${_formatMinutesSeconds(filler.seconds)} • ${filler.word}",
+                style: const TextStyle(
+                  color: Color(0xFFFFD2D2),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
+
+  Widget _reportStatRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(color: Colors.white70),
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _updateFillerTimeline(String fullTranscript) {
@@ -877,8 +1370,21 @@ $fillerTs
     final video = _replayVideoElement;
     if (video == null) return;
     if (_replayPlaying) {
+      setState(() {
+        _replayPlaying = false;
+      });
       video.pause();
     } else {
+      if (_effectiveReplayDurationSec > 0 &&
+          video.currentTime >= _effectiveReplayDurationSec) {
+        video.currentTime = 0;
+        setState(() {
+          _replayPositionSec = 0;
+        });
+      }
+      setState(() {
+        _replayPlaying = true;
+      });
       video.play();
     }
   }
@@ -886,7 +1392,9 @@ $fillerTs
   void _seekReplay(double seconds) {
     final video = _replayVideoElement;
     if (video == null) return;
-    video.currentTime = seconds.clamp(0, _replayDurationSec).toDouble();
+    final maxDuration =
+        _effectiveReplayDurationSec > 0 ? _effectiveReplayDurationSec : 1.0;
+    video.currentTime = seconds.clamp(0, maxDuration).toDouble();
     setState(() {
       _replayPositionSec = video.currentTime.toDouble();
     });
@@ -1132,7 +1640,12 @@ $fillerTs
   }
 
   (double, List<String>) _analyzeContentFeedback() {
-    final text = transcript.trim();
+    return _analyzeContentFeedbackForTranscript(transcript);
+  }
+
+  (double, List<String>) _analyzeContentFeedbackForTranscript(
+      String sourceTranscript) {
+    final text = sourceTranscript.trim();
     if (text.isEmpty) {
       return (0, ["Start speaking to generate content-level feedback."]);
     }
@@ -1144,6 +1657,22 @@ $fillerTs
     final firstSentence = sentences.isEmpty ? "" : sentences.first;
     final lastSentence = sentences.isEmpty ? "" : sentences.last;
     final wordTotal = words.length;
+    final audiencePronounHits =
+        _countPhraseHits(lower, const [" you ", " your ", " we ", " us "]);
+    final storySignalHits = _countPhraseHits(lower, const [
+      "when i",
+      "one day",
+      "i remember",
+      "at first",
+      "then",
+      "suddenly",
+      "but",
+      "however",
+      "challenge",
+      "problem",
+      "struggle",
+      "learned",
+    ]);
 
     final lengthScore = wordTotal < 20
         ? 48.0
@@ -1198,10 +1727,24 @@ $fillerTs
     final modeFitScore =
         (45 + ((modeHits / keywords.length) * 55)).clamp(0, 100).toDouble();
 
-    final contentScore = ((lengthScore * 0.20) +
-            (structureScore * 0.30) +
-            (specificityScore * 0.25) +
-            (modeFitScore * 0.25))
+    final openingScore = _strongOpeningScore(firstSentence);
+    final audienceScore = _audienceFocusScore(lower, audiencePronounHits);
+    final storyScore = (35 + (storySignalHits * 8) + (specificityHits * 4))
+        .clamp(0, 100)
+        .toDouble();
+    final endingScore =
+        _endingStrengthScore(firstSentence, lastSentence, lower);
+    final conversationalScore = _conversationalScore(sentences, lower);
+
+    final contentScore = ((lengthScore * 0.12) +
+            (structureScore * 0.20) +
+            (specificityScore * 0.16) +
+            (modeFitScore * 0.16) +
+            (openingScore * 0.14) +
+            (audienceScore * 0.10) +
+            (storyScore * 0.06) +
+            (endingScore * 0.04) +
+            (conversationalScore * 0.02))
         .clamp(0, 100)
         .toDouble();
 
@@ -1220,20 +1763,38 @@ $fillerTs
     final longSentence = _firstLongSentence(sentences);
     final hasConclusion = _hasConclusionCue(lastSentence);
     final repetitionWord = _mostRepeatedMeaningfulWord(words);
+    final hasAudienceValue = _answersAudienceQuestion(lower, firstSentence);
+    final hasStoryConflict = storySignalHits >= 2;
+    final hasCallToAction = _hasCallToAction(lastSentence);
+    final firstLastLink = _hasCircularEnding(firstSentence, lastSentence);
 
     if (openingNeedsWork && firstSentence.isNotEmpty) {
       feedback.add(
-          'Your opening is soft: "${_clipQuote(firstSentence)}". Start with the answer or main point first, then explain it.');
+          'Your opening is soft: "${_clipQuote(firstSentence)}". Start with a stronger hook, clear point, or vivid moment so the audience leans in immediately.');
     } else if (firstSentence.isNotEmpty) {
       feedback.add(
-          'Your opening gives direction quickly: "${_clipQuote(firstSentence)}". Keep that kind of direct start.');
+          'Your opening gives direction quickly: "${_clipQuote(firstSentence)}". That is a stronger Toastmasters-style start than easing in too slowly.');
+    }
+
+    if (!hasAudienceValue) {
+      feedback.add(
+          "The speech needs the listener payoff earlier. In the first minute, make it clearer why this matters to the audience, not just to you.");
+    } else if (audiencePronounHits < 2 &&
+        selectedMode != CoachingMode.interview) {
+      feedback.add(
+          "Shift a little more from 'I' to 'you' or 'we' so the audience feels included instead of just listening to your story.");
     }
 
     if (specificityScore < 70) {
       final referenceSentence =
           strongestSentence.isNotEmpty ? strongestSentence : firstSentence;
       feedback.add(
-          'You make a claim in "${_clipQuote(referenceSentence)}", but it needs one concrete result, number, or example to feel convincing.');
+          'You make a claim in "${_clipQuote(referenceSentence)}", but it needs one clearer example, image, or result to feel convincing.');
+    } else if (!hasStoryConflict &&
+        (selectedMode == CoachingMode.presentation ||
+            selectedMode == CoachingMode.speech)) {
+      feedback.add(
+          "Toastmasters puts a lot of weight on story movement. Add a challenge, tension point, or turning moment so the audience has something to follow.");
     } else if (strongestSentence.isNotEmpty) {
       feedback.add(
           'The strongest part is "${_clipQuote(strongestSentence)}" because it sounds specific instead of vague.');
@@ -1247,12 +1808,18 @@ $fillerTs
           'This sentence runs long: "${_clipQuote(longSentence)}". Split it into two shorter ideas so the listener can follow you more easily.');
     } else if (structureScore < 70) {
       feedback.add(
-          "Your ideas are there, but the structure is loose. Use a cleaner order: point, example, result.");
+          "Your ideas are there, but the structure is loose. Give the audience a path they can follow: point, support, takeaway.");
+    } else if (conversationalScore < 68) {
+      feedback.add(
+          "The content is decent, but it could sound more conversational. Use spoken phrasing that feels like you're talking with the audience, not reading at them.");
     }
 
-    if (!hasConclusion && lastSentence.isNotEmpty) {
+    if (!hasConclusion && !hasCallToAction && lastSentence.isNotEmpty) {
       feedback.add(
-          'The ending feels unfinished: "${_clipQuote(lastSentence)}". Add one closing line that states the takeaway or result.');
+          'The ending feels unfinished: "${_clipQuote(lastSentence)}". Land on a takeaway, a call to action, or a final image that people can remember.');
+    } else if (firstLastLink) {
+      feedback.add(
+          "The close connects back to the beginning, which gives the speech a more complete and memorable shape.");
     } else if (repetitionWord != null) {
       feedback.add(
           "You lean on '$repetitionWord' a lot. Swap in more precise wording so the answer sounds sharper.");
@@ -1372,6 +1939,7 @@ $fillerTs
         timestamp: DateTime.now(),
       ));
     });
+    unawaited(_persistLogs());
   }
 
   String _patternSummary() {
@@ -1411,7 +1979,7 @@ $fillerTs
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 10,
-        title: VocalytixBrandButton(
+        title: AvaixaBrandButton(
           compact: true,
           onTap: isListening
               ? null
@@ -1492,6 +2060,12 @@ $fillerTs
                         label: const Text("Reports"),
                         onSelected: (_) => setState(() => activeTabIndex = 2),
                       ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        selected: activeTabIndex == 3,
+                        label: const Text("Live Audience"),
+                        onSelected: (_) => setState(() => activeTabIndex = 3),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 16),
@@ -1546,6 +2120,8 @@ $fillerTs
                     _buildTutorialFocusCard(),
                   ] else if (activeTabIndex == 2) ...[
                     _buildReportsTab(),
+                  ] else if (activeTabIndex == 3) ...[
+                    _buildLiveAudienceTab(),
                   ] else
                     ...[],
                   if (activeTabIndex == 0) ...[
@@ -1653,7 +2229,9 @@ $fillerTs
                   child: Text(
                       _showReplayInMainCamera
                           ? "Session Replay"
-                          : "Live Camera",
+                          : (_liveAudienceImmersive
+                              ? "Live Audience View"
+                              : "Live Camera"),
                       style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w800,
@@ -1709,7 +2287,7 @@ $fillerTs
                   child: _showReplayInMainCamera
                       ? HtmlElementView(
                           key: ValueKey(
-                              'vocalytix-replay-main-${_latestRecording?.createdAt.millisecondsSinceEpoch ?? 0}'),
+                              'avaixa-replay-main-${_latestRecording?.createdAt.millisecondsSinceEpoch ?? 0}'),
                           viewType: _replayViewType,
                           onPlatformViewCreated: (_) {
                             final url =
@@ -1719,16 +2297,45 @@ $fillerTs
                             }
                           },
                         )
-                      : (cameraReady
-                          ? HtmlElementView(
-                              key: const ValueKey('vocalytix-camera-view'),
-                              viewType: _cameraViewType,
-                              onPlatformViewCreated: (viewId) {
-                                _activeCameraElementId =
-                                    '$_cameraElementIdPrefix-$viewId';
-                              },
+                      : (_liveAudienceImmersive
+                          ? Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                if (cameraReady)
+                                  IgnorePointer(
+                                    child: Opacity(
+                                      opacity: 0.01,
+                                      child: HtmlElementView(
+                                        key: const ValueKey(
+                                            'avaixa-camera-view-hidden'),
+                                        viewType: _cameraViewType,
+                                        onPlatformViewCreated: (viewId) {
+                                          _activeCameraElementId =
+                                              '$_cameraElementIdPrefix-$viewId';
+                                        },
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  const Center(
+                                      child: CircularProgressIndicator()),
+                                _buildAudienceStage(
+                                  stageHeight: cameraHeight,
+                                  immersive: true,
+                                ),
+                              ],
                             )
-                          : const Center(child: CircularProgressIndicator())),
+                          : (cameraReady
+                              ? HtmlElementView(
+                                  key: const ValueKey('avaixa-camera-view'),
+                                  viewType: _cameraViewType,
+                                  onPlatformViewCreated: (viewId) {
+                                    _activeCameraElementId =
+                                        '$_cameraElementIdPrefix-$viewId';
+                                  },
+                                )
+                              : const Center(
+                                  child: CircularProgressIndicator()))),
                 ),
               ),
             ),
@@ -1743,9 +2350,11 @@ $fillerTs
                     color: const Color(0xFFFF8A3D).withValues(alpha: 0.32)),
               ),
               child: Text(
-                isListening
-                    ? "Analytics stay live while recording. Keep speaking naturally and glance near the lens."
-                    : "Start a session to record, score, and review replay without leaving this view.",
+                _liveAudienceImmersive && !_showReplayInMainCamera
+                    ? "You're looking at the mock audience while Avaixa still records and scores your delivery in the background."
+                    : isListening
+                        ? "Analytics stay live while recording. Keep speaking naturally and glance near the lens."
+                        : "Start a session to record, score, and review replay without leaving this view.",
                 style: const TextStyle(color: Colors.white70),
               ),
             ),
@@ -1778,7 +2387,13 @@ $fillerTs
                           ? _effectiveReplayDurationSec
                           : 1.0,
                       onChangeStart: (_) {
-                        _isScrubbingReplay = true;
+                        _resumeReplayAfterScrub = _replayPlaying;
+                        if (_replayPlaying) {
+                          _replayVideoElement?.pause();
+                        }
+                        setState(() {
+                          _isScrubbingReplay = true;
+                        });
                       },
                       onChanged: (value) {
                         setState(() {
@@ -1787,7 +2402,14 @@ $fillerTs
                       },
                       onChangeEnd: (value) {
                         _seekReplay(value);
-                        _isScrubbingReplay = false;
+                        final shouldResume = _resumeReplayAfterScrub;
+                        setState(() {
+                          _isScrubbingReplay = false;
+                          _resumeReplayAfterScrub = false;
+                        });
+                        if (shouldResume) {
+                          _replayVideoElement?.play();
+                        }
                       },
                     ),
                   ),
@@ -1936,16 +2558,22 @@ $fillerTs
   }
 
   Widget _buildTranscriptCard(double fillerRate, double confidenceScore) {
-    final contentAnalysis = _analyzeContentFeedback();
-    final contentScore = contentAnalysis.$1;
-    final contentFeedback = contentAnalysis.$2;
     final showingReplayTranscript =
         _showReplayInMainCamera && _latestRecording != null;
     final transcriptText =
         showingReplayTranscript ? _latestRecording!.transcript : transcript;
+    final contentAnalysis = showingReplayTranscript
+        ? _analyzeContentFeedbackForTranscript(transcriptText)
+        : (_cachedContentScore, _cachedContentFeedback);
+    final transcriptTokens = _tokenizeTranscript(transcriptText);
+    final transcriptFillers = _detectFillers(transcriptTokens);
     final transcriptWordCount = showingReplayTranscript
         ? _countTranscriptWords(transcriptText)
         : wordCount;
+    final transcriptFillerRate = transcriptWordCount > 0
+        ? (transcriptFillers.length / transcriptWordCount) * 100
+        : 0.0;
+    final transcriptConfidence = confidenceScore;
 
     return Card(
       child: Padding(
@@ -1957,13 +2585,13 @@ $fillerTs
                 showingReplayTranscript
                     ? "Replay Transcript"
                     : "Live Transcript",
-                style: TextStyle(
+                style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w800,
                     color: Colors.white)),
             const SizedBox(height: 8),
             Text(
-              "Words: $transcriptWordCount  •  Filler Rate: ${fillerRate.toStringAsFixed(1)}%  •  Confidence: ${confidenceScore.toStringAsFixed(0)}/100",
+              "Words: $transcriptWordCount  •  Filler Rate: ${transcriptFillerRate.toStringAsFixed(1)}%  •  Confidence: ${transcriptConfidence.toStringAsFixed(0)}/100",
               style: const TextStyle(color: Colors.white70, fontSize: 13),
             ),
             const SizedBox(height: 10),
@@ -1987,9 +2615,47 @@ $fillerTs
                       style: const TextStyle(color: Colors.white, height: 1.4),
                     ),
             ),
+            const SizedBox(height: 10),
+            if (transcriptFillers.isEmpty)
+              const Text(
+                "Detected fillers in transcript: none",
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+              )
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: transcriptFillers
+                    .map((filler) => filler.label)
+                    .toSet()
+                    .take(10)
+                    .map(
+                      (label) => Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF25131A),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color:
+                                const Color(0xFFEF4444).withValues(alpha: 0.24),
+                          ),
+                        ),
+                        child: Text(
+                          label,
+                          style: const TextStyle(
+                            color: Color(0xFFFFD2D2),
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
             const SizedBox(height: 14),
             Text(
-              "Content Score: ${contentScore.toStringAsFixed(0)}/100",
+              "Content Score: ${contentAnalysis.$1.toStringAsFixed(0)}/100",
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.w800,
@@ -2000,7 +2666,7 @@ $fillerTs
                 style: TextStyle(
                     color: Colors.white70, fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
-            ...contentFeedback.map(
+            ...contentAnalysis.$2.map(
               (line) => Padding(
                 padding: const EdgeInsets.only(bottom: 6),
                 child: Row(
@@ -2043,7 +2709,7 @@ $fillerTs
                     color: Colors.white)),
             const SizedBox(height: 8),
             const Text(
-              "After a real interview/speech, log the result so Vocalytix can learn success patterns by mode.",
+              "After a real interview/speech, log the result so Avaixa can learn success patterns by mode.",
               style: TextStyle(color: Colors.white70),
             ),
             const SizedBox(height: 12),
@@ -2272,7 +2938,7 @@ $fillerTs
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 10,
-        title: VocalytixBrandButton(
+        title: AvaixaBrandButton(
           compact: true,
           onTap: () {},
         ),
@@ -2299,7 +2965,7 @@ $fillerTs
               ),
               const SizedBox(height: 8),
               const Text(
-                "The design stays intact. Pick a mode and Vocalytix will tune scoring and coaching around it.",
+                "The design stays intact. Pick a mode and Avaixa will tune scoring and coaching around it.",
                 style: TextStyle(color: Colors.white70),
               ),
               const SizedBox(height: 18),
@@ -2311,25 +2977,24 @@ $fillerTs
                         width >= 1200 ? 3 : (width >= 760 ? 2 : 1);
                     final childAspectRatio = crossAxisCount == 3 ? 2.35 : 2.1;
 
-                    return GridView.count(
-                      crossAxisCount: crossAxisCount,
-                      crossAxisSpacing: 12,
-                      mainAxisSpacing: 12,
-                      childAspectRatio: childAspectRatio,
-                      physics: const ClampingScrollPhysics(),
-                      children: CoachingMode.values.map((mode) {
-                        final selected = selectedMode == mode;
+                    final homeCards = <Widget>[
+                      ...CoachingMode.values.map((mode) {
+                        final selected =
+                            !_homeLiveAudienceSelected && selectedMode == mode;
                         return InkWell(
                           borderRadius: BorderRadius.circular(14),
                           onTap: () {
                             setState(() {
+                              _homeLiveAudienceSelected = false;
                               selectedMode = mode;
                             });
                           },
                           onDoubleTap: () {
                             setState(() {
+                              _homeLiveAudienceSelected = false;
                               selectedMode = mode;
                               hasSelectedMode = true;
+                              _liveAudienceImmersive = false;
                               activeTabIndex =
                                   selectedMode == CoachingMode.tutorials
                                       ? 1
@@ -2381,7 +3046,78 @@ $fillerTs
                             ),
                           ),
                         );
-                      }).toList(),
+                      }),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: () {
+                          setState(() {
+                            _homeLiveAudienceSelected = true;
+                            selectedMode = CoachingMode.presentation;
+                          });
+                        },
+                        onDoubleTap: () {
+                          setState(() {
+                            _homeLiveAudienceSelected = true;
+                            selectedMode = CoachingMode.presentation;
+                            hasSelectedMode = true;
+                            _liveAudienceImmersive = false;
+                            activeTabIndex = 3;
+                            score = _calculateScore();
+                          });
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: _homeLiveAudienceSelected
+                                ? const Color(0xFF4A230C)
+                                : const Color(0xFF182447),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: _homeLiveAudienceSelected
+                                  ? const Color(0xFFFF8A3D)
+                                  : Colors.white12,
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text(
+                                "Live Audience",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              const Text(
+                                "Practice in front of a mock crowd with adjustable room size and energy.",
+                                style: TextStyle(color: Colors.white70),
+                              ),
+                              if (_homeLiveAudienceSelected) ...[
+                                const SizedBox(height: 10),
+                                const Text(
+                                  "Double-click to jump straight in.",
+                                  style: TextStyle(
+                                    color: Color(0xFFFFC48B),
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ];
+
+                    return GridView.count(
+                      crossAxisCount: crossAxisCount,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: childAspectRatio,
+                      physics: const ClampingScrollPhysics(),
+                      children: homeCards,
                     );
                   },
                 ),
@@ -2393,8 +3129,10 @@ $fillerTs
                   onPressed: () {
                     setState(() {
                       hasSelectedMode = true;
-                      activeTabIndex =
-                          selectedMode == CoachingMode.tutorials ? 1 : 0;
+                      _liveAudienceImmersive = false;
+                      activeTabIndex = _homeLiveAudienceSelected
+                          ? 3
+                          : (selectedMode == CoachingMode.tutorials ? 1 : 0);
                       score = _calculateScore();
                     });
                   },
@@ -2405,7 +3143,7 @@ $fillerTs
                   icon: const Icon(Icons.arrow_forward_rounded),
                   label: const Text("Start Mode"),
                 ),
-              )
+              ),
             ],
           ),
         ),
@@ -2645,6 +3383,368 @@ $fillerTs
     );
   }
 
+  Widget _buildLiveAudienceTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Live Audience Simulator",
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white)),
+                const SizedBox(height: 8),
+                const Text(
+                  "Practice like you're in front of a room, not just a webcam. Tune the crowd and then jump into a live rep.",
+                  style: TextStyle(color: Colors.white70, height: 1.4),
+                ),
+                const SizedBox(height: 16),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isCompact = constraints.maxWidth < 780;
+                    if (isCompact) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildAudienceStage(),
+                          const SizedBox(height: 16),
+                          _buildAudienceControls(),
+                        ],
+                      );
+                    }
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 3, child: _buildAudienceStage()),
+                        const SizedBox(width: 16),
+                        Expanded(flex: 2, child: _buildAudienceControls()),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("How To Use It",
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white)),
+                const SizedBox(height: 10),
+                const Text(
+                  "1. Set the audience size and reaction.\n2. Imagine you're answering to the room, not the screen.\n3. Hit Start Live Audience Rep to switch back into Practice with that speaking mindset.",
+                  style: TextStyle(color: Colors.white70, height: 1.45),
+                ),
+                const SizedBox(height: 14),
+                FilledButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      activeTabIndex = 0;
+                      selectedMode = CoachingMode.presentation;
+                      _liveAudienceImmersive = true;
+                    });
+                  },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFE86D1F),
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.campaign_rounded),
+                  label: const Text("Start Live Audience Rep"),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAudienceStage(
+      {double stageHeight = 260, bool immersive = false}) {
+    final seatCount = _mockAudienceSize.clamp(1, 40);
+    final stageCanvasHeight = immersive
+        ? (stageHeight - 92).clamp(180.0, 640.0).toDouble()
+        : stageHeight;
+    final energyLabel = _mockAudienceEnergy > 0.75
+        ? "High energy crowd"
+        : _mockAudienceEnergy > 0.45
+            ? "Attentive crowd"
+            : "Tough room";
+    final warmthLabel = _mockAudienceWarmth > 0.72
+        ? "Supportive"
+        : _mockAudienceWarmth > 0.45
+            ? "Neutral"
+            : "Skeptical";
+
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(immersive ? 20 : 16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF10192F), Color(0xFF09111F)],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border:
+            Border.all(color: const Color(0xFFFF8A3D).withValues(alpha: 0.24)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.groups_rounded, color: Color(0xFFFFB347)),
+              const SizedBox(width: 8),
+              Text(
+                "$seatCount seat${seatCount == 1 ? '' : 's'} • $warmthLabel • $energyLabel",
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              if (immersive) ...[
+                const Spacer(),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Text(
+                    "Immersive View",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          SizedBox(height: immersive ? 20 : 16),
+          Container(
+            height: stageCanvasHeight,
+            width: double.infinity,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              gradient: const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xFF13213D), Color(0xFF0A1220)],
+              ),
+            ),
+            child: Stack(
+              children: [
+                const Positioned(
+                  left: 28,
+                  right: 28,
+                  top: 24,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Icon(Icons.lightbulb_circle_rounded,
+                          color: Color(0x55FFF3D4), size: 18),
+                      Icon(Icons.lightbulb_circle_rounded,
+                          color: Color(0x55FFF3D4), size: 18),
+                      Icon(Icons.lightbulb_circle_rounded,
+                          color: Color(0x55FFF3D4), size: 18),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  bottom: 28,
+                  child: Container(
+                    height: 62,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(18),
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF5A2D12), Color(0xFF8C4A20)],
+                      ),
+                    ),
+                    child: Center(
+                      child: Text(
+                        immersive ? "Audience In Front Of You" : "Stage",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 20,
+                  right: 20,
+                  top: 54,
+                  bottom: 100,
+                  child: Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 12,
+                    runSpacing: 14,
+                    children: List.generate(seatCount, (index) {
+                      final reaction = ((index % 5) / 4);
+                      final audienceColor = Color.lerp(
+                              const Color(0xFF3B82F6),
+                              const Color(0xFFFF8A3D),
+                              (_mockAudienceWarmth + reaction) / 2)!
+                          .withValues(alpha: 0.95);
+                      final glow =
+                          ((_mockAudienceEnergy * 0.45) + (reaction * 0.18))
+                              .clamp(0.14, 0.65);
+                      return Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 18,
+                            height: 18,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: audienceColor,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: audienceColor.withValues(alpha: glow),
+                                  blurRadius: 10,
+                                  spreadRadius: 1,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Container(
+                            width: 24,
+                            height: 16,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              color: Colors.white.withValues(alpha: 0.16),
+                            ),
+                          ),
+                        ],
+                      );
+                    }),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAudienceControls() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0E172F),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Crowd Settings",
+              style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 15)),
+          const SizedBox(height: 12),
+          Text("Audience Size: $_mockAudienceSize",
+              style: const TextStyle(color: Colors.white70)),
+          Slider(
+            value: _mockAudienceSize.toDouble(),
+            min: 1,
+            max: 40,
+            divisions: 39,
+            activeColor: const Color(0xFFE86D1F),
+            label: _mockAudienceSize.toString(),
+            onChanged: (value) {
+              setState(() {
+                _mockAudienceSize = value.round();
+              });
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "Warmth: ${(_mockAudienceWarmth * 100).round()}%",
+            style: const TextStyle(color: Colors.white70),
+          ),
+          Slider(
+            value: _mockAudienceWarmth,
+            min: 0.15,
+            max: 1,
+            activeColor: const Color(0xFFFFB347),
+            onChanged: (value) {
+              setState(() {
+                _mockAudienceWarmth = value;
+              });
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "Energy: ${(_mockAudienceEnergy * 100).round()}%",
+            style: const TextStyle(color: Colors.white70),
+          ),
+          Slider(
+            value: _mockAudienceEnergy,
+            min: 0.15,
+            max: 1,
+            activeColor: const Color(0xFF38BDF8),
+            onChanged: (value) {
+              setState(() {
+                _mockAudienceEnergy = value;
+              });
+            },
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _audiencePresetChip("Investor Pitch", 14, 0.48, 0.62),
+              _audiencePresetChip("Lecture Hall", 28, 0.72, 0.58),
+              _audiencePresetChip("Demo Day", 20, 0.84, 0.76),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _audiencePresetChip(
+      String label, int size, double warmth, double energy) {
+    return ActionChip(
+      backgroundColor: const Color(0xFF182447),
+      side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+      label: Text(label, style: const TextStyle(color: Colors.white)),
+      onPressed: () {
+        setState(() {
+          _mockAudienceSize = size;
+          _mockAudienceWarmth = warmth;
+          _mockAudienceEnergy = energy;
+        });
+      },
+    );
+  }
+
   Widget _feedbackRow(String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -2758,6 +3858,88 @@ $fillerTs
         lower.contains("so the result") ||
         lower.contains("for that reason") ||
         lower.contains("which is why");
+  }
+
+  bool _hasCallToAction(String sentence) {
+    final lower = sentence.toLowerCase();
+    return lower.contains("so i want you to") ||
+        lower.contains("i encourage you to") ||
+        lower.contains("take the next step") ||
+        lower.contains("remember this") ||
+        lower.contains("start by") ||
+        lower.contains("sign up") ||
+        lower.contains("try this");
+  }
+
+  bool _answersAudienceQuestion(String lower, String firstSentence) {
+    final firstLower = firstSentence.toLowerCase();
+    return firstLower.contains("you") ||
+        firstLower.contains("your") ||
+        firstLower.contains("we") ||
+        firstLower.contains("us") ||
+        lower.contains("this matters because") ||
+        lower.contains("the reason this matters") ||
+        lower.contains("for you") ||
+        lower.contains("for all of us");
+  }
+
+  double _strongOpeningScore(String firstSentence) {
+    final lower = firstSentence.toLowerCase().trim();
+    if (lower.isEmpty) return 20;
+    var score = 42.0;
+    if (!_hasWeakOpening(firstSentence)) score += 22;
+    if (lower.contains("?")) score += 10;
+    if (RegExp(r"\b\d+(\.\d+)?\b").hasMatch(lower)) score += 12;
+    if (lower.startsWith("imagine") ||
+        lower.startsWith("what if") ||
+        lower.startsWith("when i") ||
+        lower.startsWith("a few years ago") ||
+        lower.startsWith("let me tell you")) {
+      score += 16;
+    }
+    return score.clamp(0, 100);
+  }
+
+  double _audienceFocusScore(String lower, int audiencePronounHits) {
+    var score = 35.0 + (audiencePronounHits * 8);
+    if (_answersAudienceQuestion(lower, lower)) score += 18;
+    return score.clamp(0, 100);
+  }
+
+  double _endingStrengthScore(
+      String firstSentence, String lastSentence, String lower) {
+    var score = 34.0;
+    if (_hasConclusionCue(lastSentence)) score += 28;
+    if (_hasCallToAction(lastSentence)) score += 18;
+    if (_hasCircularEnding(firstSentence, lastSentence)) score += 20;
+    return score.clamp(0, 100);
+  }
+
+  bool _hasCircularEnding(String firstSentence, String lastSentence) {
+    final firstWords = _tokenizeTranscript(firstSentence).toSet();
+    final lastWords = _tokenizeTranscript(lastSentence).toSet();
+    if (firstWords.isEmpty || lastWords.isEmpty) return false;
+    final overlap = firstWords.intersection(lastWords)
+      ..removeWhere((word) => word.length < 4);
+    return overlap.isNotEmpty;
+  }
+
+  double _conversationalScore(List<String> sentences, String lower) {
+    if (sentences.isEmpty) return 40;
+    final avgLength = sentences
+            .map((sentence) => sentence.split(RegExp(r"\s+")).length)
+            .reduce((a, b) => a + b) /
+        sentences.length;
+    var score = avgLength <= 18 ? 76.0 : 58.0;
+    if (lower.contains("?")) score += 8;
+    if (lower.contains("you're") ||
+        lower.contains("we're") ||
+        lower.contains("it's") ||
+        lower.contains("don't") ||
+        lower.contains("let's")) {
+      score += 8;
+    }
+    return score.clamp(0, 100);
   }
 
   String? _mostRepeatedMeaningfulWord(List<String> words) {
@@ -2876,7 +4058,7 @@ $fillerTs
                 builder: (context, value, child) {
                   return Transform.scale(scale: value, child: child);
                 },
-                child: const VocalytixBrandButton(),
+                child: const AvaixaBrandButton(),
               ),
               const SizedBox(height: 22),
               const SizedBox(
@@ -2891,7 +4073,7 @@ $fillerTs
               Text(
                 _isSessionBooting
                     ? "Warming up your live coaching session..."
-                    : "Loading Vocalytix...",
+                    : "Loading Avaixa...",
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.white,
@@ -3027,12 +4209,12 @@ class _HexStopIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
+    return const SizedBox(
       width: 18,
       height: 18,
       child: Stack(
         alignment: Alignment.center,
-        children: const [
+        children: [
           Icon(Icons.hexagon, size: 18, color: Color(0xFFFFA24C)),
           Icon(Icons.stop_rounded, size: 9, color: Color(0xFFFFF0E0)),
         ],

@@ -1,4 +1,4 @@
-package com.example.vocalytix
+package com.example.avaixa
 
 import io.flutter.embedding.android.FlutterActivity
 

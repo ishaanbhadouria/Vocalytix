@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-class VocalytixBrandButton extends StatelessWidget {
-  const VocalytixBrandButton({
+class AvaixaBrandButton extends StatelessWidget {
+  const AvaixaBrandButton({
     super.key,
     this.onTap,
     this.compact = false,
@@ -15,10 +15,10 @@ class VocalytixBrandButton extends StatelessWidget {
     final brand = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        VocalytixLogoMark(size: compact ? 34 : 42),
+        AvaixaLogoMark(size: compact ? 34 : 42),
         SizedBox(width: compact ? 8 : 10),
         Text(
-          "Vocalytix",
+          "Avaixa",
           style: TextStyle(
             color: const Color(0xFFE9EEFF),
             fontSize: compact ? 19 : 24,
@@ -42,8 +42,8 @@ class VocalytixBrandButton extends StatelessWidget {
   }
 }
 
-class VocalytixLogoMark extends StatelessWidget {
-  const VocalytixLogoMark({
+class AvaixaLogoMark extends StatelessWidget {
+  const AvaixaLogoMark({
     super.key,
     this.size = 42,
   });

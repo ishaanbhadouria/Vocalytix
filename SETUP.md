@@ -1,4 +1,4 @@
-# Vocalytix - Phase 1 Setup Guide
+# Avaixa - Phase 1 Setup Guide
 
 ## Prerequisites
 1. Install Flutter:
@@ -14,7 +14,7 @@ flutter doctor
 
 ### 1. Navigate to project
 ```bash
-cd /Users/ishaanbhadouria/Desktop/CES/vocalytix
+cd /Users/ishaanbhadouria/Desktop/CES/avaixa
 ```
 
 ### 2. Get dependencies
