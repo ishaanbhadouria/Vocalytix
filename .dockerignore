@@ -5,6 +5,8 @@
 .vscode
 build
 coverage
+node_modules
+server/node_modules
 ios/Pods
 macos/Pods
 linux/flutter/ephemeral

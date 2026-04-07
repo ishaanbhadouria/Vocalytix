@@ -1,7 +1,8 @@
 # Avaixa
 
 Avaixa is a Flutter web app for presentation and interview practice. It uses
-browser speech recognition, camera access, and client-side session analysis.
+camera access, client-side session analysis, and server-backed OpenAI speech to
+text when an API key is configured.
 
 ## Local Development
 
@@ -45,7 +46,9 @@ vercel --prod
 
 ## Deploy To DigitalOcean App Platform
 
-This repo also includes a `Dockerfile` for DigitalOcean App Platform.
+This repo includes a `Dockerfile` that builds the Flutter web app and serves it
+through a small Node server. That same server hosts the OpenAI transcription
+endpoint, so your `OPENAI_API_KEY` stays on the server.
 
 ### What To Select In DigitalOcean
 
@@ -63,14 +66,19 @@ This repo also includes a `Dockerfile` for DigitalOcean App Platform.
 
 ### Environment Variables
 
-The app can be deployed without Supabase, but if you want live Supabase data,
-set these during the build:
+Build-time variables:
 
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY`
 
-If DigitalOcean asks whether the variables are available at build time, enable
-that option so Flutter can compile them into the web bundle.
+Runtime variables:
+
+- `OPENAI_API_KEY`
+- `OPENAI_TRANSCRIPTION_MODEL` (optional, defaults to `gpt-4o-mini-transcribe`)
+
+If DigitalOcean lets you mark variables as available during build, do that for
+`SUPABASE_URL` and `SUPABASE_ANON_KEY` so Flutter can compile them into the web
+bundle. Keep `OPENAI_API_KEY` server-side only.
 
 ### Local Docker Build
 
@@ -81,9 +89,16 @@ docker build \
   -t avaixa-web .
 ```
 
+Then run it with your OpenAI key:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e OPENAI_API_KEY=YOUR_OPENAI_API_KEY \
+  avaixa-web
+```
+
 ## Browser Requirements
 
 - Camera and microphone access only work over HTTPS or on localhost.
-- Speech recognition support depends on the browser. Chrome-based browsers are
-  the safest target.
+- OpenAI transcription requires microphone access and a working backend route.
 - The first session will prompt for camera and microphone permissions.

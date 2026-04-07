@@ -24,6 +24,15 @@
     let cameraPermissionGranted = false;
     let micPermissionGranted = false;
 
+    let speechRecorder;
+    let speechAudioStream = null;
+    let speechUsingOpenAI = false;
+    let speechChunkQueue = [];
+    let speechUploadInFlight = false;
+    let speechTranscript = "";
+    let speechStopRequested = false;
+    let speechRecorderStopped = false;
+
     let totalFrames = 0;
     let faceFrames = 0;
     let lookingAwayFrames = 0;
@@ -37,6 +46,15 @@
       movementAccum = 0;
       gestureFrames = 0;
       previousNose = null;
+    }
+
+    function resetSpeechState() {
+      speechChunkQueue = [];
+      speechUploadInFlight = false;
+      speechTranscript = "";
+      speechStopRequested = false;
+      speechRecorderStopped = false;
+      speechUsingOpenAI = false;
     }
 
     function sendFaceUpdate(faceDetected) {
@@ -73,7 +91,88 @@
       );
     }
 
-    window.startSpeech = function () {
+    function dispatchSpeechUpdate(text) {
+      const normalized = text
+        .replace(/\s+([,.!?])/g, "$1")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      window.dispatchEvent(
+        new CustomEvent("speech-update", {
+          detail: normalized,
+        })
+      );
+    }
+
+    function finalizeOpenAISpeechIfDone() {
+      if (!speechStopRequested || speechUploadInFlight || speechChunkQueue.length > 0 || !speechRecorderStopped) {
+        return;
+      }
+
+      if (speechAudioStream) {
+        try {
+          speechAudioStream.getTracks().forEach((track) => track.stop());
+        } catch (_) {}
+        speechAudioStream = null;
+      }
+
+      speechRecorder = null;
+      speechUsingOpenAI = false;
+      speechStopRequested = false;
+      speechRecorderStopped = false;
+      window.dispatchEvent(new Event("speech-stopped"));
+    }
+
+    async function processSpeechChunkQueue() {
+      if (speechUploadInFlight || speechChunkQueue.length === 0) {
+        finalizeOpenAISpeechIfDone();
+        return;
+      }
+
+      speechUploadInFlight = true;
+      const blob = speechChunkQueue.shift();
+      try {
+        const form = new FormData();
+        form.append("audio", blob, "speech.webm");
+        const promptTail = speechTranscript.split(/\s+/).slice(-40).join(" ").trim();
+        if (promptTail) {
+          form.append("prompt", promptTail);
+        }
+
+        const response = await fetch("/api/transcribe", {
+          method: "POST",
+          body: form,
+        });
+
+        if (!response.ok) {
+          const errorBody = await response.json().catch(() => ({}));
+          throw new Error(errorBody.error || "Transcription request failed.");
+        }
+
+        const payload = await response.json();
+        const chunkText = (payload.text || "").trim();
+        if (chunkText) {
+          speechTranscript = `${speechTranscript} ${chunkText}`.trim();
+          dispatchSpeechUpdate(speechTranscript);
+        }
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("face-error", {
+            detail: error instanceof Error
+              ? error.message
+              : "OpenAI transcription failed.",
+          })
+        );
+      } finally {
+        speechUploadInFlight = false;
+        if (speechChunkQueue.length > 0) {
+          processSpeechChunkQueue();
+        } else {
+          finalizeOpenAISpeechIfDone();
+        }
+      }
+    }
+
+    function startBrowserSpeechRecognition() {
       const SpeechRecognition =
         window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -109,11 +208,7 @@
           .replace(/\s{2,}/g, " ")
           .trim();
 
-        window.dispatchEvent(
-          new CustomEvent("speech-update", {
-            detail: transcript,
-          })
-        );
+        dispatchSpeechUpdate(transcript);
       };
 
       recognition.onend = function () {
@@ -121,9 +216,100 @@
       };
 
       recognition.start();
+    }
+
+    async function isOpenAITranscriptionReady() {
+      try {
+        const response = await fetch("/api/health", { cache: "no-store" });
+        if (!response.ok) return false;
+        const payload = await response.json();
+        return payload.openaiConfigured === true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    async function startOpenAISpeechTranscription() {
+      speechAudioStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
+
+      const preferredTypes = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ];
+
+      let options = undefined;
+      for (const type of preferredTypes) {
+        if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) {
+          options = { mimeType: type };
+          break;
+        }
+      }
+
+      speechRecorder = options
+        ? new MediaRecorder(speechAudioStream, options)
+        : new MediaRecorder(speechAudioStream);
+
+      speechUsingOpenAI = true;
+      speechStopRequested = false;
+      speechRecorderStopped = false;
+      speechTranscript = "";
+      speechChunkQueue = [];
+
+      speechRecorder.ondataavailable = function (event) {
+        if (event.data && event.data.size > 0) {
+          speechChunkQueue.push(event.data);
+          processSpeechChunkQueue();
+        }
+      };
+
+      speechRecorder.onstop = function () {
+        speechRecorderStopped = true;
+        finalizeOpenAISpeechIfDone();
+      };
+
+      speechRecorder.start(2200);
+    }
+
+    window.startSpeech = async function () {
+      resetSpeechState();
+
+      if (await isOpenAITranscriptionReady()) {
+        try {
+          await startOpenAISpeechTranscription();
+          return;
+        } catch (error) {
+          window.dispatchEvent(
+            new CustomEvent("face-error", {
+              detail: error instanceof Error
+                ? error.message
+                : "OpenAI transcription setup failed.",
+            })
+          );
+        }
+      }
+
+      startBrowserSpeechRecognition();
     };
 
     window.stopSpeech = function () {
+      if (speechUsingOpenAI) {
+        speechStopRequested = true;
+        if (speechRecorder && speechRecorder.state === "recording") {
+          try {
+            speechRecorder.requestData();
+          } catch (_) {}
+          speechRecorder.stop();
+        } else {
+          speechRecorderStopped = true;
+          finalizeOpenAISpeechIfDone();
+        }
+        return;
+      }
+
       if (recognition) {
         recognition.stop();
       }

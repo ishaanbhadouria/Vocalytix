@@ -15,11 +15,18 @@ RUN flutter config --enable-web && \
       --dart-define=SUPABASE_URL=${SUPABASE_URL} \
       --dart-define=SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
 
-FROM nginx:1.27-alpine
+FROM node:20-alpine
 
-COPY deploy/nginx/default.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/build/web /usr/share/nginx/html
+WORKDIR /app
+
+COPY server/package.json ./server/package.json
+RUN cd server && npm install --omit=dev
+
+COPY server ./server
+COPY --from=build /app/build/web ./build/web
+
+ENV PORT=8080
 
 EXPOSE 8080
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["node", "server/index.mjs"]
