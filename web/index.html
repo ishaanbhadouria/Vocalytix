@@ -32,6 +32,7 @@
     let speechTranscript = "";
     let speechStopRequested = false;
     let speechRecorderStopped = false;
+    let speechFlushTimer = null;
 
     let totalFrames = 0;
     let faceFrames = 0;
@@ -55,6 +56,10 @@
       speechStopRequested = false;
       speechRecorderStopped = false;
       speechUsingOpenAI = false;
+      if (speechFlushTimer) {
+        clearInterval(speechFlushTimer);
+        speechFlushTimer = null;
+      }
     }
 
     function sendFaceUpdate(faceDetected) {
@@ -116,6 +121,10 @@
       }
 
       speechRecorder = null;
+      if (speechFlushTimer) {
+        clearInterval(speechFlushTimer);
+        speechFlushTimer = null;
+      }
       speechUsingOpenAI = false;
       speechStopRequested = false;
       speechRecorderStopped = false;
@@ -268,10 +277,21 @@
 
       speechRecorder.onstop = function () {
         speechRecorderStopped = true;
+        if (speechFlushTimer) {
+          clearInterval(speechFlushTimer);
+          speechFlushTimer = null;
+        }
         finalizeOpenAISpeechIfDone();
       };
 
-      speechRecorder.start(2200);
+      speechRecorder.start();
+      speechFlushTimer = setInterval(() => {
+        if (speechRecorder && speechRecorder.state === "recording") {
+          try {
+            speechRecorder.requestData();
+          } catch (_) {}
+        }
+      }, 2000);
     }
 
     window.startSpeech = async function () {
@@ -299,6 +319,10 @@
       if (speechUsingOpenAI) {
         speechStopRequested = true;
         if (speechRecorder && speechRecorder.state === "recording") {
+          if (speechFlushTimer) {
+            clearInterval(speechFlushTimer);
+            speechFlushTimer = null;
+          }
           try {
             speechRecorder.requestData();
           } catch (_) {}
