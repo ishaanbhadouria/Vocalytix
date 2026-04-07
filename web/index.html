@@ -33,6 +33,8 @@
     let speechStopRequested = false;
     let speechRecorderStopped = false;
     let speechFlushTimer = null;
+    let speechRecorderOptions = undefined;
+    const speechChunkDurationMs = 2200;
 
     let totalFrames = 0;
     let faceFrames = 0;
@@ -56,8 +58,9 @@
       speechStopRequested = false;
       speechRecorderStopped = false;
       speechUsingOpenAI = false;
+      speechRecorderOptions = undefined;
       if (speechFlushTimer) {
-        clearInterval(speechFlushTimer);
+        clearTimeout(speechFlushTimer);
         speechFlushTimer = null;
       }
     }
@@ -122,7 +125,7 @@
 
       speechRecorder = null;
       if (speechFlushTimer) {
-        clearInterval(speechFlushTimer);
+        clearTimeout(speechFlushTimer);
         speechFlushTimer = null;
       }
       speechUsingOpenAI = false;
@@ -267,31 +270,70 @@
       speechRecorderStopped = false;
       speechTranscript = "";
       speechChunkQueue = [];
+      speechRecorderOptions = options;
+      startNextSpeechSegment();
+    }
+
+    function startNextSpeechSegment() {
+      if (!speechAudioStream || speechStopRequested) {
+        speechRecorderStopped = true;
+        finalizeOpenAISpeechIfDone();
+        return;
+      }
+
+      const segmentChunks = [];
+      speechRecorderStopped = false;
+      speechRecorder = speechRecorderOptions
+        ? new MediaRecorder(speechAudioStream, speechRecorderOptions)
+        : new MediaRecorder(speechAudioStream);
 
       speechRecorder.ondataavailable = function (event) {
         if (event.data && event.data.size > 0) {
-          speechChunkQueue.push(event.data);
-          processSpeechChunkQueue();
+          segmentChunks.push(event.data);
         }
       };
 
       speechRecorder.onstop = function () {
-        speechRecorderStopped = true;
+        const blob = segmentChunks.length
+          ? new Blob(segmentChunks, {
+              type: speechRecorderOptions?.mimeType || "audio/webm",
+            })
+          : null;
+
+        if (blob && blob.size > 0) {
+          speechChunkQueue.push(blob);
+          processSpeechChunkQueue();
+        }
+
         if (speechFlushTimer) {
-          clearInterval(speechFlushTimer);
+          clearTimeout(speechFlushTimer);
           speechFlushTimer = null;
         }
-        finalizeOpenAISpeechIfDone();
+
+        if (speechStopRequested) {
+          speechRecorderStopped = true;
+          finalizeOpenAISpeechIfDone();
+          return;
+        }
+
+        setTimeout(() => {
+          startNextSpeechSegment();
+        }, 0);
       };
 
       speechRecorder.start();
-      speechFlushTimer = setInterval(() => {
+      speechFlushTimer = setTimeout(() => {
         if (speechRecorder && speechRecorder.state === "recording") {
           try {
             speechRecorder.requestData();
           } catch (_) {}
+          setTimeout(() => {
+            if (speechRecorder && speechRecorder.state === "recording") {
+              speechRecorder.stop();
+            }
+          }, 120);
         }
-      }, 2000);
+      }, speechChunkDurationMs);
     }
 
     window.startSpeech = async function () {
@@ -318,14 +360,11 @@
     window.stopSpeech = function () {
       if (speechUsingOpenAI) {
         speechStopRequested = true;
+        if (speechFlushTimer) {
+          clearTimeout(speechFlushTimer);
+          speechFlushTimer = null;
+        }
         if (speechRecorder && speechRecorder.state === "recording") {
-          if (speechFlushTimer) {
-            clearInterval(speechFlushTimer);
-            speechFlushTimer = null;
-          }
-          try {
-            speechRecorder.requestData();
-          } catch (_) {}
           speechRecorder.stop();
         } else {
           speechRecorderStopped = true;

@@ -32,6 +32,12 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
+  console.log("/api/transcribe request", {
+    hasClient: Boolean(client),
+    hasFile: Boolean(req.file),
+    size: req.file?.size ?? 0,
+    mime: req.file?.mimetype ?? null,
+  });
   if (!client) {
     return res.status(503).json({
       error: "OPENAI_API_KEY is not configured on the server.",
@@ -59,6 +65,7 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
       prompt,
     });
 
+    console.log("/api/transcribe success", { chars: transcription.text?.length ?? 0 });
     return res.json({
       text: transcription.text?.trim() ?? "",
       model: transcriptionModel,
@@ -66,6 +73,7 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Transcription failed.";
+    console.error("/api/transcribe error", message);
     return res.status(500).json({ error: message });
   }
 });
