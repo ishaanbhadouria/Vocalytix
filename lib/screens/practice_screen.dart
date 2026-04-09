@@ -102,6 +102,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
   Timer? _paceRefreshTimer;
   Timer? _sessionTimer;
   Timer? _homeHintTimer;
+  Timer? _contentFeedbackDebounce;
   int _lastLiveWordCount = 0;
   int _sessionElapsedSec = 0;
   double _lastSessionDurationSec = 0;
@@ -118,6 +119,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
   DateTime? _lastSpeechUiRefreshAt;
   DateTime? _lastFaceUiRefreshAt;
   int _lastSpeechUiWordCount = 0;
+  int _contentFeedbackRequestId = 0;
+  String _lastAiFeedbackTranscript = "";
+  bool _contentFeedbackLoading = false;
   double _cachedContentScore = 0;
   List<String> _cachedContentFeedback = const [
     "Start speaking to generate content-level feedback.",
@@ -125,6 +129,8 @@ class _PracticeScreenState extends State<PracticeScreen> {
 
   static const Duration _speechUiRefreshInterval = Duration(milliseconds: 220);
   static const Duration _faceUiRefreshInterval = Duration(milliseconds: 180);
+  static const Duration _contentFeedbackDebounceDelay =
+      Duration(milliseconds: 900);
 
   static const String _cameraReminderStorageKey =
       'avaixa-hide-camera-reminder';
@@ -519,6 +525,10 @@ class _PracticeScreenState extends State<PracticeScreen> {
       _lastSpeechUiRefreshAt = null;
       _lastFaceUiRefreshAt = null;
       _lastSpeechUiWordCount = 0;
+      _contentFeedbackRequestId++;
+      _lastAiFeedbackTranscript = "";
+      _contentFeedbackLoading = false;
+      _contentFeedbackDebounce?.cancel();
       _cachedContentScore = 0;
       _cachedContentFeedback = const [
         "Start speaking to generate content-level feedback.",
@@ -592,6 +602,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
     });
     if (latestReport != null) {
       unawaited(_persistReports());
+      unawaited(_upgradeReportWithAiContentFeedback(latestReport));
     }
 
     if (latestReport != null) {
@@ -644,6 +655,110 @@ class _PracticeScreenState extends State<PracticeScreen> {
     _cachedContentScore = contentAnalysis.$1;
     _cachedContentFeedback = contentAnalysis.$2;
     _lastSpeechUiWordCount = wordCount;
+    _scheduleAiContentRefresh(contentAnalysis);
+  }
+
+  void _scheduleAiContentRefresh((double, List<String>) localAnalysis) {
+    final transcriptText = transcript.trim();
+    if (transcriptText.isEmpty) return;
+    if (_countTranscriptWords(transcriptText) < 25) return;
+    if (_contentFeedbackLoading &&
+        _lastAiFeedbackTranscript == transcriptText) {
+      return;
+    }
+
+    _contentFeedbackDebounce?.cancel();
+    _contentFeedbackDebounce =
+        Timer(_contentFeedbackDebounceDelay, () {
+      unawaited(
+        _loadAiContentFeedbackForLiveTranscript(
+          transcriptText: transcriptText,
+          localAnalysis: localAnalysis,
+        ),
+      );
+    });
+  }
+
+  Future<void> _loadAiContentFeedbackForLiveTranscript({
+    required String transcriptText,
+    required (double, List<String>) localAnalysis,
+  }) async {
+    final requestId = ++_contentFeedbackRequestId;
+    _contentFeedbackLoading = true;
+
+    final aiAnalysis = await _requestAiContentFeedback(
+      transcriptText: transcriptText,
+      localAnalysis: localAnalysis,
+    );
+
+    if (!mounted || requestId != _contentFeedbackRequestId) return;
+
+    _contentFeedbackLoading = false;
+    if (aiAnalysis == null || transcript.trim() != transcriptText) return;
+
+    setState(() {
+      _lastAiFeedbackTranscript = transcriptText;
+      _cachedContentScore = aiAnalysis.$1;
+      _cachedContentFeedback = aiAnalysis.$2;
+      _lastSpeechUiRefreshAt = DateTime.now();
+    });
+  }
+
+  Future<(double, List<String>)?> _requestAiContentFeedback({
+    required String transcriptText,
+    required (double, List<String>) localAnalysis,
+  }) async {
+    try {
+      final response = await html.HttpRequest.request(
+        "/api/content-feedback",
+        method: "POST",
+        sendData: jsonEncode({
+          "mode": selectedMode.name,
+          "transcript": transcriptText,
+          "delivery": {
+            "wordCount": _countTranscriptWords(transcriptText),
+            "wpm": wordsPerMinute,
+            "fillerCount": fillerCount,
+            "fillerRate":
+                wordCount > 0 ? (fillerCount / wordCount) * 100 : 0.0,
+            "confidenceScore": _currentConfidenceScore,
+            "paceLabel": _paceLabel,
+            "confidenceLabel": _confidenceLabel,
+          },
+          "localAnalysis": {
+            "contentScore": localAnalysis.$1,
+            "contentFeedback": localAnalysis.$2,
+          },
+          "recentReports": _recentReportsForMode(selectedMode, limit: 3)
+              .map(
+                (report) => {
+                  "createdAt": report.createdAt.toIso8601String(),
+                  "contentScore": report.contentScore,
+                  "wordCount": report.wordCount,
+                  "wpm": report.wpm,
+                  "contentFeedback": report.contentFeedback,
+                },
+              )
+              .toList(),
+        }),
+        requestHeaders: {
+          "Content-Type": "application/json",
+        },
+      );
+
+      final rawBody = response.responseText;
+      if (rawBody == null || rawBody.isEmpty) return null;
+      final parsed = jsonDecode(rawBody) as Map<String, dynamic>;
+      final aiScore = (parsed["contentScore"] as num?)?.toDouble();
+      final aiFeedback = (parsed["contentFeedback"] as List<dynamic>? ?? [])
+          .map((item) => item.toString().trim())
+          .where((item) => item.isNotEmpty)
+          .toList();
+      if (aiScore == null || aiFeedback.isEmpty) return null;
+      return (aiScore, aiFeedback.take(4).toList());
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
@@ -651,6 +766,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
     _paceRefreshTimer?.cancel();
     _sessionTimer?.cancel();
     _homeHintTimer?.cancel();
+    _contentFeedbackDebounce?.cancel();
     super.dispose();
   }
 
@@ -683,6 +799,58 @@ class _PracticeScreenState extends State<PracticeScreen> {
       contentFeedback: contentFeedback,
       fillerTimeline: List<FillerTimestamp>.from(_currentFillerTimeline),
     );
+  }
+
+  Future<void> _upgradeReportWithAiContentFeedback(SessionReport report) async {
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    final transcriptText = transcript.trim();
+    if (transcriptText.isEmpty) return;
+
+    final localAnalysis = (report.contentScore, report.contentFeedback);
+    final aiAnalysis = await _requestAiContentFeedback(
+      transcriptText: transcriptText,
+      localAnalysis: localAnalysis,
+    );
+    if (!mounted || aiAnalysis == null) return;
+
+    final upgradedReport = SessionReport(
+      mode: report.mode,
+      createdAt: report.createdAt,
+      overallScore: report.overallScore,
+      contentScore: aiAnalysis.$1,
+      paceLabel: report.paceLabel,
+      confidenceLabel: report.confidenceLabel,
+      wordCount: report.wordCount,
+      wpm: report.wpm,
+      fillerCount: report.fillerCount,
+      fillerRate: report.fillerRate,
+      confidenceScore: report.confidenceScore,
+      facePresence: report.facePresence,
+      eyeContact: report.eyeContact,
+      headStability: report.headStability,
+      gestureRating: report.gestureRating,
+      gestureMoments: report.gestureMoments,
+      visualMessage: report.visualMessage,
+      voiceFeedback: report.voiceFeedback,
+      contentFeedback: aiAnalysis.$2,
+      fillerTimeline: report.fillerTimeline,
+    );
+
+    final index = _sessionReports.indexWhere(
+      (item) =>
+          item.createdAt == report.createdAt &&
+          item.mode == report.mode &&
+          item.wordCount == report.wordCount,
+    );
+    if (index == -1) return;
+
+    setState(() {
+      _sessionReports[index] = upgradedReport;
+      if (_pendingReportDialog == report) {
+        _pendingReportDialog = upgradedReport;
+      }
+    });
+    await _persistReports();
   }
 
   Future<void> _showFullReportDialog(SessionReport report) async {

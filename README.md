@@ -75,6 +75,7 @@ Runtime variables:
 
 - `OPENAI_API_KEY`
 - `OPENAI_TRANSCRIPTION_MODEL` (optional, defaults to `gpt-4o-mini-transcribe`)
+- `OPENAI_FEEDBACK_MODEL` (optional, defaults to `gpt-5-mini`)
 
 If DigitalOcean lets you mark variables as available during build, do that for
 `SUPABASE_URL` and `SUPABASE_ANON_KEY` so Flutter can compile them into the web
