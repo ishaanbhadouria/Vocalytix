@@ -1767,6 +1767,27 @@ $fillerTs
     final hasStoryConflict = storySignalHits >= 2;
     final hasCallToAction = _hasCallToAction(lastSentence);
     final firstLastLink = _hasCircularEnding(firstSentence, lastSentence);
+    final recentModeReports = _recentReportsForMode(selectedMode, limit: 3);
+    final recentAverageContent = recentModeReports.isEmpty
+        ? null
+        : recentModeReports
+                .map((report) => report.contentScore)
+                .reduce((a, b) => a + b) /
+            recentModeReports.length;
+
+    final trendFeedback = _contentTrendFeedback(
+      contentScore: contentScore,
+      recentAverageContent: recentAverageContent,
+      recentReportCount: recentModeReports.length,
+    );
+    if (trendFeedback != null) {
+      feedback.add(trendFeedback);
+    }
+
+    final recurringPattern = _recurringContentPatternFeedback(recentModeReports);
+    if (recurringPattern != null) {
+      feedback.add(recurringPattern);
+    }
 
     if (openingNeedsWork && firstSentence.isNotEmpty) {
       feedback.add(
@@ -1828,6 +1849,21 @@ $fillerTs
           "The answer would feel stronger if it used more ${_modeLabel(selectedMode).toLowerCase()}-specific language.");
     }
 
+    final modePersonalFeedback = _modeSpecificContentFeedback(
+      lower: lower,
+      wordTotal: wordTotal,
+      structureScore: structureScore,
+      specificityScore: specificityScore,
+      hasAudienceValue: hasAudienceValue,
+      hasConclusion: hasConclusion,
+      hasCallToAction: hasCallToAction,
+      hasStoryConflict: hasStoryConflict,
+      hedgingHits: hedgingHits,
+    );
+    if (modePersonalFeedback != null) {
+      feedback.add(modePersonalFeedback);
+    }
+
     if (selectedMode == CoachingMode.interview &&
         !(lower.contains("situation") ||
             lower.contains("task") ||
@@ -1845,7 +1881,173 @@ $fillerTs
           "For presentation mode, land the message with a takeaway or recommendation instead of stopping after explanation.");
     }
 
-    return (contentScore, feedback.take(4).toList());
+    final uniqueFeedback = <String>{};
+    final orderedFeedback = <String>[];
+    for (final item in feedback) {
+      final normalized = item.trim();
+      if (normalized.isEmpty) continue;
+      if (uniqueFeedback.add(normalized)) {
+        orderedFeedback.add(normalized);
+      }
+    }
+
+    return (contentScore, orderedFeedback.take(4).toList());
+  }
+
+  List<SessionReport> _recentReportsForMode(CoachingMode mode, {int limit = 3}) {
+    return _sessionReports
+        .where((report) => report.mode == mode)
+        .take(limit)
+        .toList();
+  }
+
+  String? _contentTrendFeedback({
+    required double contentScore,
+    required double? recentAverageContent,
+    required int recentReportCount,
+  }) {
+    if (recentAverageContent == null || recentReportCount == 0) return null;
+    final delta = contentScore - recentAverageContent;
+    final modeName = _modeLabel(selectedMode);
+    if (delta >= 6) {
+      return "Compared with your last $recentReportCount $modeName reps, this one is sharper on content. Keep leaning into what made this answer more specific and directed.";
+    }
+    if (delta <= -6) {
+      return "Compared with your last $recentReportCount $modeName reps, this one is less focused. Go back to the tighter structure and clearer examples you have already shown you can deliver.";
+    }
+    return null;
+  }
+
+  String? _recurringContentPatternFeedback(List<SessionReport> reports) {
+    if (reports.length < 2) return null;
+
+    int openingHits = 0;
+    int specificityHits = 0;
+    int structureHits = 0;
+    int audienceHits = 0;
+    int endingHits = 0;
+
+    for (final report in reports) {
+      final joined = report.contentFeedback.join(" ").toLowerCase();
+      if (joined.contains("opening")) openingHits++;
+      if (joined.contains("example") ||
+          joined.contains("specific") ||
+          joined.contains("result") ||
+          joined.contains("convincing")) {
+        specificityHits++;
+      }
+      if (joined.contains("structure") ||
+          joined.contains("path they can follow") ||
+          joined.contains("star shape")) {
+        structureHits++;
+      }
+      if (joined.contains("audience") || joined.contains("listener payoff")) {
+        audienceHits++;
+      }
+      if (joined.contains("ending") ||
+          joined.contains("takeaway") ||
+          joined.contains("call to action")) {
+        endingHits++;
+      }
+    }
+
+    final patternCounts = <String, int>{
+      "opening": openingHits,
+      "specificity": specificityHits,
+      "structure": structureHits,
+      "audience": audienceHits,
+      "ending": endingHits,
+    };
+
+    String? topPattern;
+    var topCount = 0;
+    patternCounts.forEach((pattern, count) {
+      if (count > topCount) {
+        topCount = count;
+        topPattern = pattern;
+      }
+    });
+
+    if (topPattern == null || topCount < 2) return null;
+
+    switch (topPattern) {
+      case "opening":
+        return "Your recent reps keep easing in too slowly. Personalize this one by deciding on the first line before you start so you sound intentional immediately.";
+      case "specificity":
+        return "Your recent pattern is good ideas without enough proof. Personalize this rep around one concrete example, number, or result that only you can say.";
+      case "structure":
+        return "Your recent reps keep circling the point before landing it. Personalize the structure around a simple sequence you trust: point, support, takeaway.";
+      case "audience":
+        return "Your recent reps focus on what you did more than why the listener should care. Personalize this one by stating the audience payoff earlier than usual.";
+      case "ending":
+        return "Your recent reps tend to fade out instead of landing cleanly. Pick your final takeaway before you begin so the close feels deliberate.";
+    }
+    return null;
+  }
+
+  String? _modeSpecificContentFeedback({
+    required String lower,
+    required int wordTotal,
+    required double structureScore,
+    required double specificityScore,
+    required bool hasAudienceValue,
+    required bool hasConclusion,
+    required bool hasCallToAction,
+    required bool hasStoryConflict,
+    required int hedgingHits,
+  }) {
+    switch (selectedMode) {
+      case CoachingMode.interview:
+        if (!lower.contains("result") &&
+            !lower.contains("impact") &&
+            !RegExp(r"\b\d+(\.\d+)?\b").hasMatch(lower)) {
+          return "Make the answer sound more like your story, not a job description. End with what changed because of your action, ideally with a concrete result.";
+        }
+        if (structureScore < 72) {
+          return "For interview mode, personalize the shape around your real sequence: what the situation was, what you chose to do, and what happened after.";
+        }
+        return null;
+      case CoachingMode.presentation:
+        if (!hasAudienceValue) {
+          return "For presentation mode, personalize the message around the audience's decision. Make it obvious what they should understand, believe, or do next.";
+        }
+        if (!hasConclusion && !hasCallToAction) {
+          return "Your presentation content would feel more executive-ready with a closing recommendation. Tell the room what the takeaway is, not just what the facts are.";
+        }
+        return null;
+      case CoachingMode.speech:
+        if (!hasStoryConflict) {
+          return "For speech mode, personalize the message with a moment of tension or change. People remember the turn, not just the topic.";
+        }
+        if (!hasAudienceValue) {
+          return "The story is personal, but the lesson still needs to travel. Make the audience payoff explicit so it feels bigger than your own experience.";
+        }
+        return null;
+      case CoachingMode.informal:
+        if (hedgingHits >= 2) {
+          return "For informal mode, keep the warmth but trust your point more. You sound most like yourself when you say the idea directly instead of cushioning it.";
+        }
+        if (wordTotal > 140) {
+          return "This sounds personable, but a little long-winded. Trim one side detail so the main point comes through faster and sounds more naturally you.";
+        }
+        return null;
+      case CoachingMode.formal:
+        if (hedgingHits >= 1) {
+          return "For formal mode, remove softeners like 'maybe' or 'I think' unless uncertainty is the actual message. The content should sound decisive and deliberate.";
+        }
+        if (specificityScore < 70) {
+          return "Formal answers feel strongest when they sound grounded. Add one concrete risk, metric, or next step so the recommendation feels credible.";
+        }
+        return null;
+      case CoachingMode.tutorials:
+        if (wordTotal < 35) {
+          return "For tutorial reps, give yourself one clean teaching arc: setup, example, takeaway. Right now the answer ends before the lesson fully lands.";
+        }
+        if (structureScore < 70) {
+          return "This is a good practice rep to slow down and label the steps out loud. Tutorials become more personal when your listener can follow your exact teaching order.";
+        }
+        return null;
+    }
   }
 
   String _modeLabel(CoachingMode mode) {
