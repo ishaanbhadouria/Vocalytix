@@ -68,6 +68,25 @@ function extractResponseText(responseBody) {
   return parts.join("\n").trim();
 }
 
+function modeSpecificAgentGoal(mode) {
+  switch (mode) {
+    case "interview":
+      return "coach the speaker toward concise STAR answers with ownership and measurable outcomes";
+    case "presentation":
+      return "coach the speaker toward clear recommendations, evidence, and audience takeaway";
+    case "speech":
+      return "coach the speaker toward story movement, emotional resonance, and a memorable close";
+    case "informal":
+      return "coach the speaker toward natural clarity, warmth, and relatable specificity";
+    case "formal":
+      return "coach the speaker toward executive presence, precision, and grounded next steps";
+    case "tutorials":
+      return "coach the speaker toward step-by-step clarity, examples, and listener confidence";
+    default:
+      return "coach the speaker toward clearer structure, specificity, and audience relevance";
+  }
+}
+
 app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
   if (!client) {
     return res.status(503).json({
@@ -233,6 +252,141 @@ app.post("/api/content-feedback", async (req, res) => {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Content feedback failed.";
+    return res.status(500).json({ error: message });
+  }
+});
+
+app.post("/api/agent-coach", async (req, res) => {
+  if (!client) {
+    return res.status(503).json({
+      error: "OPENAI_API_KEY is not configured on the server.",
+    });
+  }
+
+  const transcript =
+    typeof req.body?.transcript === "string" ? req.body.transcript.trim() : "";
+  if (!transcript) {
+    return res.status(400).json({
+      error: "Transcript is required.",
+    });
+  }
+
+  const mode =
+    typeof req.body?.mode === "string" && req.body.mode.trim().length > 0
+      ? req.body.mode.trim()
+      : "presentation";
+
+  const payload = {
+    mode,
+    modeGoal: modeSpecificAgentGoal(mode),
+    transcript,
+    delivery: req.body?.delivery ?? {},
+    report: req.body?.report ?? {},
+    recentReports: Array.isArray(req.body?.recentReports)
+      ? req.body.recentReports.slice(0, 5)
+      : [],
+  };
+
+  try {
+    const openAiResponse = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: feedbackModel,
+        input: [
+          {
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "You are Avaixa's ongoing speaking coach. Act like a coach with memory, not a one-shot evaluator. Read the current transcript and recent session history, identify the single highest-leverage improvement area, explain why it matters now, and prescribe one specific next rep mission plus a short drill. Keep it direct, practical, and encouraging. Avoid generic fluff.",
+              },
+            ],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "Build an agentic coaching plan from this session data. Return strict JSON only.\n\n" +
+                  JSON.stringify(payload),
+              },
+            ],
+          },
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "agent_coach_plan",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                memorySummary: { type: "string" },
+                priorityFocus: { type: "string" },
+                whyNow: { type: "string" },
+                nextRepMission: { type: "string" },
+                drillTitle: { type: "string" },
+                drillSteps: {
+                  type: "array",
+                  minItems: 2,
+                  maxItems: 4,
+                  items: { type: "string" },
+                },
+                followUpPrompt: { type: "string" },
+              },
+              required: [
+                "memorySummary",
+                "priorityFocus",
+                "whyNow",
+                "nextRepMission",
+                "drillTitle",
+                "drillSteps",
+                "followUpPrompt",
+              ],
+            },
+          },
+        },
+      }),
+    });
+
+    const responseBody = await openAiResponse.json();
+    if (!openAiResponse.ok) {
+      return res.status(openAiResponse.status).json({
+        error:
+          responseBody?.error?.message ??
+          "OpenAI agent coaching request failed.",
+      });
+    }
+
+    const responseText = extractResponseText(responseBody);
+    const parsed = JSON.parse(responseText);
+    const drillSteps = Array.isArray(parsed.drillSteps)
+      ? parsed.drillSteps
+          .map((item) => item?.toString().trim() ?? "")
+          .filter(Boolean)
+          .slice(0, 4)
+      : [];
+
+    return res.json({
+      memorySummary: parsed.memorySummary?.toString().trim() ?? "",
+      priorityFocus: parsed.priorityFocus?.toString().trim() ?? "",
+      whyNow: parsed.whyNow?.toString().trim() ?? "",
+      nextRepMission: parsed.nextRepMission?.toString().trim() ?? "",
+      drillTitle: parsed.drillTitle?.toString().trim() ?? "",
+      drillSteps,
+      followUpPrompt: parsed.followUpPrompt?.toString().trim() ?? "",
+      model: feedbackModel,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Agent coaching failed.";
     return res.status(500).json({ error: message });
   }
 });

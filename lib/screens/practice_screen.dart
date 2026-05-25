@@ -602,7 +602,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
     });
     if (latestReport != null) {
       unawaited(_persistReports());
-      unawaited(_upgradeReportWithAiContentFeedback(latestReport));
+      unawaited(_upgradeReportWithAiCoaching(latestReport));
     }
 
     if (latestReport != null) {
@@ -801,7 +801,75 @@ class _PracticeScreenState extends State<PracticeScreen> {
     );
   }
 
-  Future<void> _upgradeReportWithAiContentFeedback(SessionReport report) async {
+  Future<AgentCoachPlan?> _requestAiAgentCoachPlan(SessionReport report) async {
+    try {
+      final response = await html.HttpRequest.request(
+        "/api/agent-coach",
+        method: "POST",
+        sendData: jsonEncode({
+          "mode": report.mode.name,
+          "transcript": transcript.trim(),
+          "delivery": {
+            "paceLabel": report.paceLabel,
+            "wpm": report.wpm,
+            "wordCount": report.wordCount,
+            "fillerCount": report.fillerCount,
+            "fillerRate": report.fillerRate,
+            "confidenceLabel": report.confidenceLabel,
+            "confidenceScore": report.confidenceScore,
+            "facePresence": report.facePresence,
+            "eyeContact": report.eyeContact,
+            "headStability": report.headStability,
+            "gestureRating": report.gestureRating,
+          },
+          "report": {
+            "overallScore": report.overallScore,
+            "contentScore": report.contentScore,
+            "voiceFeedback": report.voiceFeedback,
+            "contentFeedback": report.contentFeedback,
+            "visualMessage": report.visualMessage,
+          },
+          "recentReports": _recentReportsForMode(report.mode, limit: 5)
+              .map(
+                (item) => {
+                  "createdAt": item.createdAt.toIso8601String(),
+                  "overallScore": item.overallScore,
+                  "contentScore": item.contentScore,
+                  "wpm": item.wpm,
+                  "fillerRate": item.fillerRate,
+                  "contentFeedback": item.contentFeedback,
+                  "voiceFeedback": item.voiceFeedback,
+                  "agentCoachPlan": item.agentCoachPlan.toJson(),
+                },
+              )
+              .toList(),
+        }),
+        requestHeaders: {
+          "Content-Type": "application/json",
+        },
+      );
+
+      final rawBody = response.responseText;
+      if (rawBody == null || rawBody.isEmpty) return null;
+      final parsed = jsonDecode(rawBody) as Map<String, dynamic>;
+      return AgentCoachPlan(
+        memorySummary: parsed["memorySummary"]?.toString() ?? "",
+        priorityFocus: parsed["priorityFocus"]?.toString() ?? "",
+        whyNow: parsed["whyNow"]?.toString() ?? "",
+        nextRepMission: parsed["nextRepMission"]?.toString() ?? "",
+        drillTitle: parsed["drillTitle"]?.toString() ?? "",
+        drillSteps: (parsed["drillSteps"] as List<dynamic>? ?? [])
+            .map((item) => item.toString().trim())
+            .where((item) => item.isNotEmpty)
+            .toList(),
+        followUpPrompt: parsed["followUpPrompt"]?.toString() ?? "",
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _upgradeReportWithAiCoaching(SessionReport report) async {
     await Future<void>.delayed(const Duration(milliseconds: 900));
     final transcriptText = transcript.trim();
     if (transcriptText.isEmpty) return;
@@ -811,13 +879,14 @@ class _PracticeScreenState extends State<PracticeScreen> {
       transcriptText: transcriptText,
       localAnalysis: localAnalysis,
     );
-    if (!mounted || aiAnalysis == null) return;
+    final agentCoachPlan = await _requestAiAgentCoachPlan(report);
+    if (!mounted || (aiAnalysis == null && agentCoachPlan == null)) return;
 
     final upgradedReport = SessionReport(
       mode: report.mode,
       createdAt: report.createdAt,
       overallScore: report.overallScore,
-      contentScore: aiAnalysis.$1,
+      contentScore: aiAnalysis?.$1 ?? report.contentScore,
       paceLabel: report.paceLabel,
       confidenceLabel: report.confidenceLabel,
       wordCount: report.wordCount,
@@ -832,8 +901,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
       gestureMoments: report.gestureMoments,
       visualMessage: report.visualMessage,
       voiceFeedback: report.voiceFeedback,
-      contentFeedback: aiAnalysis.$2,
+      contentFeedback: aiAnalysis?.$2 ?? report.contentFeedback,
       fillerTimeline: report.fillerTimeline,
+      agentCoachPlan: agentCoachPlan ?? report.agentCoachPlan,
     );
 
     final index = _sessionReports.indexWhere(
@@ -1061,6 +1131,15 @@ class _PracticeScreenState extends State<PracticeScreen> {
                         );
                       },
                     ),
+                    if (!report.agentCoachPlan.isEmpty) ...[
+                      const SizedBox(height: 18),
+                      _buildReportSectionCard(
+                        title: "Agent Coach Plan",
+                        accent: const Color(0xFF8B5CF6),
+                        icon: Icons.assistant_rounded,
+                        child: _buildAgentCoachPlan(report.agentCoachPlan),
+                      ),
+                    ],
                     const SizedBox(height: 18),
                     Row(
                       children: [
@@ -1131,6 +1210,15 @@ ${r.voiceFeedback.map((e) => "- $e").join("\n")}
 CONTENT FEEDBACK
 ${r.contentFeedback.map((e) => "- $e").join("\n")}
 
+AGENT COACH PLAN
+- Memory Summary: ${r.agentCoachPlan.memorySummary}
+- Priority Focus: ${r.agentCoachPlan.priorityFocus}
+- Why Now: ${r.agentCoachPlan.whyNow}
+- Next Rep Mission: ${r.agentCoachPlan.nextRepMission}
+- Drill Title: ${r.agentCoachPlan.drillTitle}
+${r.agentCoachPlan.drillSteps.map((e) => "- $e").join("\n")}
+- Follow Up Prompt: ${r.agentCoachPlan.followUpPrompt}
+
 FILLER TIMESTAMPS
 $fillerTs
 """;
@@ -1178,7 +1266,9 @@ $fillerTs
               ),
               const SizedBox(height: 8),
               Text(
-                report.contentFeedback.isNotEmpty
+                report.agentCoachPlan.nextRepMission.trim().isNotEmpty
+                    ? report.agentCoachPlan.nextRepMission
+                    : report.contentFeedback.isNotEmpty
                     ? report.contentFeedback.first
                     : report.voiceFeedback.firstOrNull ??
                         "Keep refining your message and delivery together.",
@@ -1391,6 +1481,98 @@ $fillerTs
             ),
           )
           .toList(),
+    );
+  }
+
+  Widget _buildAgentCoachPlan(AgentCoachPlan plan) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (plan.memorySummary.trim().isNotEmpty)
+          _buildAgentCoachCallout("What Avaixa Remembers", plan.memorySummary),
+        if (plan.priorityFocus.trim().isNotEmpty)
+          _buildAgentCoachCallout("Priority Focus", plan.priorityFocus),
+        if (plan.whyNow.trim().isNotEmpty)
+          _buildAgentCoachCallout("Why This Now", plan.whyNow),
+        if (plan.nextRepMission.trim().isNotEmpty)
+          _buildAgentCoachCallout("Next Rep Mission", plan.nextRepMission),
+        if (plan.drillTitle.trim().isNotEmpty ||
+            plan.drillSteps.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            plan.drillTitle.trim().isEmpty ? "Drill" : plan.drillTitle,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 10),
+          ...plan.drillSteps.map(
+            (step) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Icon(
+                      Icons.arrow_forward_rounded,
+                      color: Color(0xFF8B5CF6),
+                      size: 18,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      step,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+        if (plan.followUpPrompt.trim().isNotEmpty)
+          _buildAgentCoachCallout("When You Retry", plan.followUpPrompt),
+      ],
+    );
+  }
+
+  Widget _buildAgentCoachCallout(String label, String text) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xFFD8B4FE),
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              height: 1.42,
+            ),
+          ),
+        ],
+      ),
     );
   }
 

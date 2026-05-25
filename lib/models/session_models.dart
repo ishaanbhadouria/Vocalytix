@@ -90,6 +90,57 @@ class SessionRecording {
   final List<FillerTimestamp> fillerTimeline;
 }
 
+class AgentCoachPlan {
+  const AgentCoachPlan({
+    this.memorySummary = '',
+    this.priorityFocus = '',
+    this.whyNow = '',
+    this.nextRepMission = '',
+    this.drillTitle = '',
+    this.drillSteps = const [],
+    this.followUpPrompt = '',
+  });
+
+  final String memorySummary;
+  final String priorityFocus;
+  final String whyNow;
+  final String nextRepMission;
+  final String drillTitle;
+  final List<String> drillSteps;
+  final String followUpPrompt;
+
+  bool get isEmpty =>
+      memorySummary.trim().isEmpty &&
+      priorityFocus.trim().isEmpty &&
+      whyNow.trim().isEmpty &&
+      nextRepMission.trim().isEmpty &&
+      drillTitle.trim().isEmpty &&
+      drillSteps.isEmpty &&
+      followUpPrompt.trim().isEmpty;
+
+  Map<String, dynamic> toJson() => {
+        'memorySummary': memorySummary,
+        'priorityFocus': priorityFocus,
+        'whyNow': whyNow,
+        'nextRepMission': nextRepMission,
+        'drillTitle': drillTitle,
+        'drillSteps': drillSteps,
+        'followUpPrompt': followUpPrompt,
+      };
+
+  factory AgentCoachPlan.fromJson(Map<String, dynamic> json) {
+    return AgentCoachPlan(
+      memorySummary: json['memorySummary']?.toString() ?? '',
+      priorityFocus: json['priorityFocus']?.toString() ?? '',
+      whyNow: json['whyNow']?.toString() ?? '',
+      nextRepMission: json['nextRepMission']?.toString() ?? '',
+      drillTitle: json['drillTitle']?.toString() ?? '',
+      drillSteps: (json['drillSteps'] as List<dynamic>? ?? []).cast<String>(),
+      followUpPrompt: json['followUpPrompt']?.toString() ?? '',
+    );
+  }
+}
+
 class SessionReport {
   const SessionReport({
     required this.mode,
@@ -112,6 +163,7 @@ class SessionReport {
     required this.voiceFeedback,
     required this.contentFeedback,
     required this.fillerTimeline,
+    this.agentCoachPlan = const AgentCoachPlan(),
   });
 
   final CoachingMode mode;
@@ -134,6 +186,7 @@ class SessionReport {
   final List<String> voiceFeedback;
   final List<String> contentFeedback;
   final List<FillerTimestamp> fillerTimeline;
+  final AgentCoachPlan agentCoachPlan;
 
   Map<String, dynamic> toJson() => {
         'mode': mode.name,
@@ -156,6 +209,7 @@ class SessionReport {
         'voiceFeedback': voiceFeedback,
         'contentFeedback': contentFeedback,
         'fillerTimeline': fillerTimeline.map((item) => item.toJson()).toList(),
+        'agentCoachPlan': agentCoachPlan.toJson(),
       };
 
   factory SessionReport.fromJson(Map<String, dynamic> json) {
@@ -189,6 +243,11 @@ class SessionReport {
       contentFeedback:
           (json['contentFeedback'] as List<dynamic>? ?? []).cast<String>(),
       fillerTimeline: fillerTimeline,
+      agentCoachPlan: json['agentCoachPlan'] is Map
+          ? AgentCoachPlan.fromJson(
+              Map<String, dynamic>.from(json['agentCoachPlan'] as Map),
+            )
+          : const AgentCoachPlan(),
     );
   }
 }
