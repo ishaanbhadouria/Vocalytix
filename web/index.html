@@ -34,6 +34,7 @@
     let speechRecorderStopped = false;
     let speechFlushTimer = null;
     let speechRecorderOptions = undefined;
+    let speechRecordedMimeType = "audio/webm";
     const speechChunkDurationMs = 2200;
 
     let totalFrames = 0;
@@ -59,10 +60,25 @@
       speechRecorderStopped = false;
       speechUsingOpenAI = false;
       speechRecorderOptions = undefined;
+      speechRecordedMimeType = "audio/webm";
       if (speechFlushTimer) {
         clearTimeout(speechFlushTimer);
         speechFlushTimer = null;
       }
+    }
+
+    function speechFilenameForMimeType(type) {
+      const normalized = (type || "").toLowerCase();
+      if (normalized.includes("mp4") || normalized.includes("mpeg") || normalized.includes("m4a")) {
+        return "speech.m4a";
+      }
+      if (normalized.includes("ogg")) {
+        return "speech.ogg";
+      }
+      if (normalized.includes("wav")) {
+        return "speech.wav";
+      }
+      return "speech.webm";
     }
 
     function sendFaceUpdate(faceDetected) {
@@ -144,7 +160,8 @@
       const blob = speechChunkQueue.shift();
       try {
         const form = new FormData();
-        form.append("audio", blob, "speech.webm");
+        const mimeType = blob.type || speechRecordedMimeType || "audio/webm";
+        form.append("audio", blob, speechFilenameForMimeType(mimeType));
         const promptTail = speechTranscript.split(/\s+/).slice(-40).join(" ").trim();
         if (promptTail) {
           form.append("prompt", promptTail);
@@ -271,6 +288,7 @@
       speechTranscript = "";
       speechChunkQueue = [];
       speechRecorderOptions = options;
+      speechRecordedMimeType = options?.mimeType || speechRecorder.mimeType || "audio/webm";
       startNextSpeechSegment();
     }
 
@@ -286,6 +304,8 @@
       speechRecorder = speechRecorderOptions
         ? new MediaRecorder(speechAudioStream, speechRecorderOptions)
         : new MediaRecorder(speechAudioStream);
+      speechRecordedMimeType =
+        speechRecorder.mimeType || speechRecorderOptions?.mimeType || speechRecordedMimeType || "audio/webm";
 
       speechRecorder.ondataavailable = function (event) {
         if (event.data && event.data.size > 0) {
@@ -296,7 +316,12 @@
       speechRecorder.onstop = function () {
         const blob = segmentChunks.length
           ? new Blob(segmentChunks, {
-              type: speechRecorderOptions?.mimeType || "audio/webm",
+              type:
+                segmentChunks[0]?.type ||
+                speechRecorder.mimeType ||
+                speechRecorderOptions?.mimeType ||
+                speechRecordedMimeType ||
+                "audio/webm",
             })
           : null;
 
