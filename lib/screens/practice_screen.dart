@@ -4691,8 +4691,10 @@ $fillerTs
     final results = <_DetectedFiller>[];
     int i = 0;
     while (i < words.length) {
-      final word = words[i];
-      final next = i + 1 < words.length ? words[i + 1] : "";
+      final word = _normalizeFillerToken(words[i]);
+      final next = i + 1 < words.length
+          ? _normalizeFillerToken(words[i + 1])
+          : "";
 
       if (word == "you" && next == "know") {
         results.add(_DetectedFiller(label: "you know", index: i));
@@ -4778,9 +4780,16 @@ $fillerTs
 
   bool _isSoFiller(List<String> words, int i) {
     if (i == 0) return true;
-    final prev = words[i - 1];
+    final prev = _normalizeFillerToken(words[i - 1]);
     const fillerLikeBefore = {"um", "uh", "like", "you", "know"};
     return fillerLikeBefore.contains(prev);
+  }
+
+  String _normalizeFillerToken(String word) {
+    if (RegExp(r"^u+m+$").hasMatch(word)) return "um";
+    if (RegExp(r"^u+h+$").hasMatch(word)) return "uh";
+    if (RegExp(r"^u+h+m+$").hasMatch(word)) return "uhm";
+    return word;
   }
 }
 
