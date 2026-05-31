@@ -35,7 +35,10 @@
     let speechFlushTimer = null;
     let speechRecorderOptions = undefined;
     let speechRecordedMimeType = "audio/webm";
-    const speechChunkDurationMs = 2200;
+    let speechEmptyChunkCount = 0;
+    let speechFailureCount = 0;
+    let speechFallbackActivated = false;
+    const speechChunkDurationMs = 4200;
 
     let totalFrames = 0;
     let faceFrames = 0;
@@ -61,6 +64,9 @@
       speechUsingOpenAI = false;
       speechRecorderOptions = undefined;
       speechRecordedMimeType = "audio/webm";
+      speechEmptyChunkCount = 0;
+      speechFailureCount = 0;
+      speechFallbackActivated = false;
       if (speechFlushTimer) {
         clearTimeout(speechFlushTimer);
         speechFlushTimer = null;
@@ -147,7 +153,54 @@
       speechUsingOpenAI = false;
       speechStopRequested = false;
       speechRecorderStopped = false;
+      if (speechFallbackActivated) {
+        speechFallbackActivated = false;
+        return;
+      }
       window.dispatchEvent(new Event("speech-stopped"));
+    }
+
+    function fallbackToBrowserSpeechRecognition(message) {
+      if (speechFallbackActivated) {
+        return;
+      }
+
+      speechFallbackActivated = true;
+      speechStopRequested = true;
+      speechChunkQueue = [];
+      speechUploadInFlight = false;
+
+      if (speechFlushTimer) {
+        clearTimeout(speechFlushTimer);
+        speechFlushTimer = null;
+      }
+
+      if (speechRecorder && speechRecorder.state === "recording") {
+        try {
+          speechRecorder.stop();
+        } catch (_) {}
+      }
+
+      if (speechAudioStream) {
+        try {
+          speechAudioStream.getTracks().forEach((track) => track.stop());
+        } catch (_) {}
+        speechAudioStream = null;
+      }
+
+      speechRecorder = null;
+      speechUsingOpenAI = false;
+      speechRecorderStopped = true;
+
+      window.dispatchEvent(
+        new CustomEvent("face-error", {
+          detail: message,
+        })
+      );
+
+      setTimeout(() => {
+        startBrowserSpeechRecognition();
+      }, 0);
     }
 
     async function processSpeechChunkQueue() {
@@ -180,10 +233,27 @@
         const payload = await response.json();
         const chunkText = (payload.text || "").trim();
         if (chunkText) {
+          speechEmptyChunkCount = 0;
+          speechFailureCount = 0;
           speechTranscript = `${speechTranscript} ${chunkText}`.trim();
           dispatchSpeechUpdate(speechTranscript);
+        } else {
+          speechEmptyChunkCount += 1;
+          if (speechTranscript.trim().length === 0 && speechEmptyChunkCount >= 2) {
+            fallbackToBrowserSpeechRecognition(
+              "OpenAI transcription is not returning text yet. Switched to browser speech recognition."
+            );
+            return;
+          }
         }
       } catch (error) {
+        speechFailureCount += 1;
+        if (speechTranscript.trim().length === 0 && speechFailureCount >= 1) {
+          fallbackToBrowserSpeechRecognition(
+            "OpenAI transcription hit an error. Switched to browser speech recognition."
+          );
+          return;
+        }
         window.dispatchEvent(
           new CustomEvent("face-error", {
             detail: error instanceof Error
@@ -289,6 +359,9 @@
       speechChunkQueue = [];
       speechRecorderOptions = options;
       speechRecordedMimeType = options?.mimeType || speechRecorder.mimeType || "audio/webm";
+      speechEmptyChunkCount = 0;
+      speechFailureCount = 0;
+      speechFallbackActivated = false;
       startNextSpeechSegment();
     }
 
