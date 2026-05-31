@@ -43,7 +43,14 @@ class _TranscriptChunk {
 }
 
 class PracticeScreen extends StatefulWidget {
-  const PracticeScreen({super.key});
+  const PracticeScreen({
+    super.key,
+    this.onExitToAuth,
+    this.viewerLabel,
+  });
+
+  final Future<void> Function()? onExitToAuth;
+  final String? viewerLabel;
 
   @override
   State<PracticeScreen> createState() => _PracticeScreenState();
@@ -153,6 +160,45 @@ class _PracticeScreenState extends State<PracticeScreen> {
     "like",
     "thing",
   };
+
+  Future<void> _handleExitToAuth() async {
+    final action = widget.onExitToAuth;
+    if (action == null) return;
+    await action();
+  }
+
+  List<Widget> _buildShellActions() {
+    if (widget.viewerLabel == null && widget.onExitToAuth == null) {
+      return const [];
+    }
+
+    return [
+      if (widget.viewerLabel != null)
+        Container(
+          margin: const EdgeInsets.only(right: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          child: Text(
+            widget.viewerLabel!,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      if (widget.onExitToAuth != null)
+        IconButton(
+          tooltip: "Sign out",
+          onPressed: _handleExitToAuth,
+          icon: const Icon(Icons.logout_rounded),
+        ),
+      const SizedBox(width: 6),
+    ];
+  }
 
   @override
   void initState() {
@@ -2572,6 +2618,7 @@ $fillerTs
                   _beginLoadingOverlay(const Duration(milliseconds: 1800));
                 },
         ),
+        actions: _buildShellActions(),
       ),
       body: Stack(
         children: [
@@ -3522,6 +3569,7 @@ $fillerTs
           compact: true,
           onTap: () {},
         ),
+        actions: _buildShellActions(),
       ),
       body: Container(
         decoration: const BoxDecoration(

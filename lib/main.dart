@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'screens/auth_screen.dart';
 import 'services/supabase_bootstrap.dart';
 import 'screens/practice_screen.dart';
 
@@ -63,7 +65,128 @@ class AvaixaApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const PracticeScreen(),
+      home: const AvaixaAppShell(),
+    );
+  }
+}
+
+class AvaixaAppShell extends StatefulWidget {
+  const AvaixaAppShell({super.key});
+
+  @override
+  State<AvaixaAppShell> createState() => _AvaixaAppShellState();
+}
+
+class _AvaixaAppShellState extends State<AvaixaAppShell> {
+  bool _localPreviewUnlocked = false;
+
+  Future<void> _signIn({
+    required String email,
+    required String password,
+  }) async {
+    final client = SupabaseBootstrap.client;
+    if (client == null) {
+      throw Exception(
+        "Supabase auth is not configured in this environment yet.",
+      );
+    }
+
+    final response = await client.auth.signInWithPassword(
+      email: email,
+      password: password,
+    );
+    if (response.session == null) {
+      throw Exception("We couldn't sign you in. Please try again.");
+    }
+  }
+
+  Future<void> _signUp({
+    required String email,
+    required String password,
+    required String fullName,
+  }) async {
+    final client = SupabaseBootstrap.client;
+    if (client == null) {
+      throw Exception(
+        "Supabase auth is not configured in this environment yet.",
+      );
+    }
+
+    final response = await client.auth.signUp(
+      email: email,
+      password: password,
+      data: {
+        "full_name": fullName,
+      },
+    );
+
+    if (response.user == null) {
+      throw Exception("We couldn't create the account. Please try again.");
+    }
+  }
+
+  String _viewerLabelForUser(User user) {
+    final fullName = user.userMetadata?["full_name"]?.toString().trim();
+    if (fullName != null && fullName.isNotEmpty) return fullName;
+
+    final email = user.email?.trim();
+    if (email != null && email.isNotEmpty) return email;
+
+    return "Signed in";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!SupabaseBootstrap.isConfigured) {
+      if (_localPreviewUnlocked) {
+        return PracticeScreen(
+          onExitToAuth: () async {
+            setState(() {
+              _localPreviewUnlocked = false;
+            });
+          },
+          viewerLabel: "Local Preview",
+        );
+      }
+
+      return AuthScreen(
+        isSupabaseConfigured: false,
+        onSignIn: _signIn,
+        onSignUp: _signUp,
+        onContinueLocalPreview: () {
+          setState(() {
+            _localPreviewUnlocked = true;
+          });
+        },
+      );
+    }
+
+    final client = SupabaseBootstrap.client!;
+    return StreamBuilder<AuthState>(
+      stream: client.auth.onAuthStateChange,
+      initialData: AuthState(
+        AuthChangeEvent.initialSession,
+        client.auth.currentSession,
+      ),
+      builder: (context, snapshot) {
+        final session = snapshot.data?.session ?? client.auth.currentSession;
+        final user = session?.user;
+
+        if (user == null) {
+          return AuthScreen(
+            isSupabaseConfigured: true,
+            onSignIn: _signIn,
+            onSignUp: _signUp,
+          );
+        }
+
+        return PracticeScreen(
+          viewerLabel: _viewerLabelForUser(user),
+          onExitToAuth: () async {
+            await client.auth.signOut();
+          },
+        );
+      },
     );
   }
 }
