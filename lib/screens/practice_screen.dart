@@ -122,6 +122,7 @@ class _PracticeScreenState extends State<PracticeScreen> {
   int _contentFeedbackRequestId = 0;
   String _lastAiFeedbackTranscript = "";
   bool _contentFeedbackLoading = false;
+  Timer? _replayPositionTicker;
   double _cachedContentScore = 0;
   List<String> _cachedContentFeedback = const [
     "Start speaking to generate content-level feedback.",
@@ -761,12 +762,35 @@ class _PracticeScreenState extends State<PracticeScreen> {
     }
   }
 
+  void _startReplayPositionTicker() {
+    _replayPositionTicker?.cancel();
+    _replayPositionTicker = Timer.periodic(
+      const Duration(milliseconds: 120),
+      (_) {
+        if (!mounted || !_replayPlaying || _isScrubbingReplay) return;
+        final video = _replayVideoElement;
+        if (video == null) return;
+        final currentTime = video.currentTime.toDouble();
+        if ((currentTime - _replayPositionSec).abs() < 0.05) return;
+        setState(() {
+          _replayPositionSec = currentTime;
+        });
+      },
+    );
+  }
+
+  void _stopReplayPositionTicker() {
+    _replayPositionTicker?.cancel();
+    _replayPositionTicker = null;
+  }
+
   @override
   void dispose() {
     _paceRefreshTimer?.cancel();
     _sessionTimer?.cancel();
     _homeHintTimer?.cancel();
     _contentFeedbackDebounce?.cancel();
+    _stopReplayPositionTicker();
     super.dispose();
   }
 
@@ -1673,6 +1697,7 @@ $fillerTs
     _pendingReplayUrl = null;
 
     video.pause();
+    _stopReplayPositionTicker();
     video.src = url;
     video.load();
     setState(() {
@@ -1700,13 +1725,16 @@ $fillerTs
       });
 
       video.onPlay.listen((_) {
+        _startReplayPositionTicker();
         setState(() => _replayPlaying = true);
       });
 
       video.onPause.listen((_) {
+        _stopReplayPositionTicker();
         setState(() => _replayPlaying = false);
       });
       video.onEnded.listen((_) {
+        _stopReplayPositionTicker();
         setState(() {
           _replayPlaying = false;
           _replayPositionSec = _effectiveReplayDurationSec;
