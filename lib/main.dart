@@ -20,7 +20,7 @@ class AvaixaApp extends StatelessWidget {
       title: 'Avaixa',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFFF8A3D),
+          seedColor: const Color(0xFF62A8FF),
           brightness: Brightness.dark,
         ),
         scaffoldBackgroundColor: const Color(0xFF0B1020),
@@ -36,8 +36,8 @@ class AvaixaApp extends StatelessWidget {
         ),
         chipTheme: ChipThemeData(
           backgroundColor: const Color(0xFF182447),
-          selectedColor: const Color(0xFFE86D1F),
-          secondarySelectedColor: const Color(0xFFE86D1F),
+          selectedColor: const Color(0xFF2E78D1),
+          secondarySelectedColor: const Color(0xFF2E78D1),
           labelStyle: const TextStyle(color: Colors.white),
           secondaryLabelStyle: const TextStyle(color: Colors.white),
           shape: RoundedRectangleBorder(
@@ -80,6 +80,51 @@ class AvaixaAppShell extends StatefulWidget {
 class _AvaixaAppShellState extends State<AvaixaAppShell> {
   bool _localPreviewUnlocked = false;
 
+  Exception _friendlyAuthException(
+    Object error, {
+    required bool signUp,
+  }) {
+    final raw = error.toString().replaceFirst('Exception: ', '');
+    final normalized = raw.toLowerCase();
+
+    if (!signUp &&
+        (normalized.contains('invalid login credentials') ||
+            normalized.contains('invalid_credentials') ||
+            normalized.contains('user not found') ||
+            normalized.contains('email not found') ||
+            normalized.contains('invalid email or password'))) {
+      return Exception(
+        "This account does not exist or the username/password is incorrect.",
+      );
+    }
+
+    if (signUp &&
+        (normalized.contains('user already registered') ||
+            normalized.contains('already registered') ||
+            normalized.contains('already been registered'))) {
+      return Exception(
+        "An account with this email already exists. Try signing in instead.",
+      );
+    }
+
+    if (normalized.contains('<!doctype') ||
+        normalized.contains('not valid json') ||
+        normalized.contains("unexpected token '<'") ||
+        normalized.contains('failed to decode error response')) {
+      return Exception(
+        "Create account isn't working yet because Avaixa can't reach the Supabase auth API correctly. Double-check the deployed SUPABASE_URL and make sure the app finished redeploying.",
+      );
+    }
+
+    if (signUp) {
+      return Exception("We couldn't create the account. Please try again.");
+    }
+
+    return Exception(
+      "This account does not exist or the username/password is incorrect.",
+    );
+  }
+
   Future<void> _signIn({
     required String email,
     required String password,
@@ -91,12 +136,16 @@ class _AvaixaAppShellState extends State<AvaixaAppShell> {
       );
     }
 
-    final response = await client.auth.signInWithPassword(
-      email: email,
-      password: password,
-    );
-    if (response.session == null) {
-      throw Exception("We couldn't sign you in. Please try again.");
+    try {
+      final response = await client.auth.signInWithPassword(
+        email: email,
+        password: password,
+      );
+      if (response.session == null) {
+        throw Exception("We couldn't sign you in. Please try again.");
+      }
+    } catch (error) {
+      throw _friendlyAuthException(error, signUp: false);
     }
   }
 
@@ -112,16 +161,20 @@ class _AvaixaAppShellState extends State<AvaixaAppShell> {
       );
     }
 
-    final response = await client.auth.signUp(
-      email: email,
-      password: password,
-      data: {
-        "full_name": fullName,
-      },
-    );
+    try {
+      final response = await client.auth.signUp(
+        email: email,
+        password: password,
+        data: {
+          "full_name": fullName,
+        },
+      );
 
-    if (response.user == null) {
-      throw Exception("We couldn't create the account. Please try again.");
+      if (response.user == null) {
+        throw Exception("We couldn't create the account. Please try again.");
+      }
+    } catch (error) {
+      throw _friendlyAuthException(error, signUp: true);
     }
   }
 

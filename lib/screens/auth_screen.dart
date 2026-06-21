@@ -169,7 +169,7 @@ class _AuthScreenState extends State<AuthScreen> {
           child: const Text(
             "Personalized AI speech coaching",
             style: TextStyle(
-              color: Color(0xFFFFC58A),
+              color: Color(0xFFBFD9FF),
               fontWeight: FontWeight.w700,
               letterSpacing: 0.2,
             ),
@@ -195,24 +195,24 @@ class _AuthScreenState extends State<AuthScreen> {
             height: 1.55,
           ),
         ),
-        const SizedBox(height: 28),
-        const Wrap(
-          spacing: 14,
-          runSpacing: 14,
-          children: [
-            _FeaturePill(
-              title: "Replay intelligence",
-              detail: "Review timing, fillers, and pacing with live playback.",
+        const SizedBox(height: 22),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.05),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          child: Text(
+            _isSignUp
+                ? "Create an account so your replays, AI coaching, and speaking history stay tied to you."
+                : "Sign in to jump back into your saved replays, coaching memory, and active progress.",
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.74),
+              fontSize: 15,
+              height: 1.45,
             ),
-            _FeaturePill(
-              title: "Agent coach memory",
-              detail: "Keep advice tied to your actual habits across sessions.",
-            ),
-            _FeaturePill(
-              title: "Mode-specific reps",
-              detail: "Train for interviews, presentations, speeches, and more.",
-            ),
-          ],
+          ),
         ),
       ],
     );
@@ -326,6 +326,17 @@ class _AuthScreenState extends State<AuthScreen> {
                 return null;
               },
             ),
+            if (_isSignUp) ...[
+              const SizedBox(height: 10),
+              Text(
+                "Strong password hint: use 8+ characters with uppercase, lowercase, a number, and a symbol.",
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.6),
+                  fontSize: 13,
+                  height: 1.4,
+                ),
+              ),
+            ],
             if (_errorText != null) ...[
               const SizedBox(height: 14),
               Container(
@@ -351,8 +362,8 @@ class _AuthScreenState extends State<AuthScreen> {
                     ? _submit
                     : null,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFFF8A3D),
-                  foregroundColor: const Color(0xFF1A1020),
+                  backgroundColor: const Color(0xFF62A8FF),
+                  foregroundColor: const Color(0xFF081120),
                   disabledBackgroundColor:
                       Colors.white.withValues(alpha: 0.08),
                   disabledForegroundColor:
@@ -442,12 +453,12 @@ class _AuthModeChip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 13),
           decoration: BoxDecoration(
             color: active
-                ? const Color(0xFFFF8A3D)
+                ? const Color(0xFF62A8FF)
                 : Colors.white.withValues(alpha: 0.05),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: active
-                  ? const Color(0xFFFFB77B)
+                  ? const Color(0xFFB4D8FF)
                   : Colors.white.withValues(alpha: 0.08),
             ),
           ),
@@ -455,7 +466,7 @@ class _AuthModeChip extends StatelessWidget {
             child: Text(
               label,
               style: TextStyle(
-                color: active ? const Color(0xFF1A1020) : Colors.white,
+                color: active ? const Color(0xFF081120) : Colors.white,
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -513,7 +524,7 @@ class _AuthTextField extends StatelessWidget {
         ),
         focusedBorder: const OutlineInputBorder(
           borderRadius: BorderRadius.all(Radius.circular(16)),
-          borderSide: BorderSide(color: Color(0xFFFF8A3D), width: 1.2),
+          borderSide: BorderSide(color: Color(0xFF62A8FF), width: 1.2),
         ),
         errorBorder: const OutlineInputBorder(
           borderRadius: BorderRadius.all(Radius.circular(16)),
@@ -522,51 +533,6 @@ class _AuthTextField extends StatelessWidget {
         focusedErrorBorder: const OutlineInputBorder(
           borderRadius: BorderRadius.all(Radius.circular(16)),
           borderSide: BorderSide(color: Color(0xFFFF7A8C), width: 1.2),
-        ),
-      ),
-    );
-  }
-}
-
-class _FeaturePill extends StatelessWidget {
-  const _FeaturePill({
-    required this.title,
-    required this.detail,
-  });
-
-  final String title;
-  final String detail;
-
-  @override
-  Widget build(BuildContext context) {
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 240),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.06),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              detail,
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.7),
-                height: 1.45,
-              ),
-            ),
-          ],
         ),
       ),
     );
