@@ -32,11 +32,14 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
   final _fullNameController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
 
   AuthScreenMode _mode = AuthScreenMode.signIn;
   bool _submitting = false;
+  bool _obscurePassword = true;
+  bool _obscureConfirmPassword = true;
   String? _errorText;
 
   bool get _isSignUp => _mode == AuthScreenMode.signUp;
@@ -45,6 +48,7 @@ class _AuthScreenState extends State<AuthScreen> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _confirmPasswordController.dispose();
     _fullNameController.dispose();
     super.dispose();
   }
@@ -90,6 +94,10 @@ class _AuthScreenState extends State<AuthScreen> {
     setState(() {
       _mode = mode;
       _errorText = null;
+      _passwordController.clear();
+      _confirmPasswordController.clear();
+      _obscurePassword = true;
+      _obscureConfirmPassword = true;
     });
   }
 
@@ -315,8 +323,19 @@ class _AuthScreenState extends State<AuthScreen> {
             _AuthTextField(
               controller: _passwordController,
               hintText: _isSignUp ? "Create a password" : "Enter your password",
-              obscureText: true,
+              obscureText: _obscurePassword,
               enabled: widget.isSupabaseConfigured && !_submitting,
+              suffixIcon: IconButton(
+                onPressed: () {
+                  setState(() {
+                    _obscurePassword = !_obscurePassword;
+                  });
+                },
+                icon: Icon(
+                  _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                  color: Colors.white.withValues(alpha: 0.68),
+                ),
+              ),
               validator: (value) {
                 final text = value ?? "";
                 if (text.isEmpty) return "Enter your password.";
@@ -335,6 +354,39 @@ class _AuthScreenState extends State<AuthScreen> {
                   fontSize: 13,
                   height: 1.4,
                 ),
+              ),
+              const SizedBox(height: 16),
+              _fieldLabel("Confirm password"),
+              const SizedBox(height: 8),
+              _AuthTextField(
+                controller: _confirmPasswordController,
+                hintText: "Re-enter your password",
+                obscureText: _obscureConfirmPassword,
+                enabled: widget.isSupabaseConfigured && !_submitting,
+                suffixIcon: IconButton(
+                  onPressed: () {
+                    setState(() {
+                      _obscureConfirmPassword = !_obscureConfirmPassword;
+                    });
+                  },
+                  icon: Icon(
+                    _obscureConfirmPassword
+                        ? Icons.visibility_off
+                        : Icons.visibility,
+                    color: Colors.white.withValues(alpha: 0.68),
+                  ),
+                ),
+                validator: (value) {
+                  if (!_isSignUp) return null;
+                  final text = value ?? "";
+                  if (text.isEmpty) {
+                    return "Confirm your password.";
+                  }
+                  if (text != _passwordController.text) {
+                    return "Passwords do not match yet.";
+                  }
+                  return null;
+                },
               ),
             ],
             if (_errorText != null) ...[
@@ -483,6 +535,7 @@ class _AuthTextField extends StatelessWidget {
     required this.hintText,
     this.validator,
     this.obscureText = false,
+    this.suffixIcon,
     this.keyboardType,
     this.enabled = true,
   });
@@ -491,6 +544,7 @@ class _AuthTextField extends StatelessWidget {
   final String hintText;
   final String? Function(String?)? validator;
   final bool obscureText;
+  final Widget? suffixIcon;
   final TextInputType? keyboardType;
   final bool enabled;
 
@@ -508,6 +562,7 @@ class _AuthTextField extends StatelessWidget {
         hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.36)),
         filled: true,
         fillColor: const Color(0xFF0E1530),
+        suffixIcon: suffixIcon,
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         border: OutlineInputBorder(
