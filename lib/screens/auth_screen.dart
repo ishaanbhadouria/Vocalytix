@@ -41,8 +41,14 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
   String? _errorText;
+  String? _infoText;
 
   bool get _isSignUp => _mode == AuthScreenMode.signUp;
+
+  static final RegExp _hasUppercase = RegExp(r'[A-Z]');
+  static final RegExp _hasLowercase = RegExp(r'[a-z]');
+  static final RegExp _hasNumber = RegExp(r'[0-9]');
+  static final RegExp _hasSymbol = RegExp(r'[^A-Za-z0-9]');
 
   @override
   void dispose() {
@@ -61,6 +67,7 @@ class _AuthScreenState extends State<AuthScreen> {
     setState(() {
       _submitting = true;
       _errorText = null;
+      _infoText = null;
     });
 
     try {
@@ -70,6 +77,17 @@ class _AuthScreenState extends State<AuthScreen> {
           password: _passwordController.text,
           fullName: _fullNameController.text.trim(),
         );
+
+        if (!mounted) return;
+        setState(() {
+          _mode = AuthScreenMode.signIn;
+          _passwordController.clear();
+          _confirmPasswordController.clear();
+          _obscurePassword = true;
+          _obscureConfirmPassword = true;
+          _infoText =
+              "Confirmation email sent. Check your inbox, confirm your email, and then sign in.";
+        });
       } else {
         await widget.onSignIn(
           email: _emailController.text.trim(),
@@ -79,6 +97,7 @@ class _AuthScreenState extends State<AuthScreen> {
     } catch (error) {
       setState(() {
         _errorText = error.toString().replaceFirst('Exception: ', '');
+        _infoText = null;
       });
     } finally {
       if (mounted) {
@@ -94,6 +113,7 @@ class _AuthScreenState extends State<AuthScreen> {
     setState(() {
       _mode = mode;
       _errorText = null;
+      _infoText = null;
       _passwordController.clear();
       _confirmPasswordController.clear();
       _obscurePassword = true;
@@ -310,7 +330,9 @@ class _AuthScreenState extends State<AuthScreen> {
               enabled: widget.isSupabaseConfigured && !_submitting,
               validator: (value) {
                 final text = value?.trim() ?? "";
-                if (text.isEmpty) return "Enter the email tied to your account.";
+                if (text.isEmpty) {
+                  return "Enter the email tied to your account.";
+                }
                 if (!text.contains("@") || !text.contains(".")) {
                   return "Use a valid email address.";
                 }
@@ -339,8 +361,14 @@ class _AuthScreenState extends State<AuthScreen> {
               validator: (value) {
                 final text = value ?? "";
                 if (text.isEmpty) return "Enter your password.";
-                if (_isSignUp && text.length < 8) {
-                  return "Use at least 8 characters.";
+                if (_isSignUp) {
+                  if (text.length < 8 ||
+                      !_hasUppercase.hasMatch(text) ||
+                      !_hasLowercase.hasMatch(text) ||
+                      !_hasNumber.hasMatch(text) ||
+                      !_hasSymbol.hasMatch(text)) {
+                    return "Password does not meet the required requirements.";
+                  }
                 }
                 return null;
               },
@@ -406,6 +434,23 @@ class _AuthScreenState extends State<AuthScreen> {
                 ),
               ),
             ],
+            if (_infoText != null) ...[
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF173253),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0x8862A8FF)),
+                ),
+                child: Text(
+                  _infoText!,
+                  style: const TextStyle(color: Color(0xFFD3E7FF)),
+                ),
+              ),
+            ],
             const SizedBox(height: 22),
             SizedBox(
               width: double.infinity,
@@ -416,10 +461,8 @@ class _AuthScreenState extends State<AuthScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF62A8FF),
                   foregroundColor: const Color(0xFF081120),
-                  disabledBackgroundColor:
-                      Colors.white.withValues(alpha: 0.08),
-                  disabledForegroundColor:
-                      Colors.white.withValues(alpha: 0.45),
+                  disabledBackgroundColor: Colors.white.withValues(alpha: 0.08),
+                  disabledForegroundColor: Colors.white.withValues(alpha: 0.45),
                   padding: const EdgeInsets.symmetric(vertical: 18),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),

@@ -8,6 +8,23 @@ class SupabaseBootstrap {
 
   static bool get isConfigured => _url.isNotEmpty && _anonKey.isNotEmpty;
 
+  static String get emailRedirectTo {
+    final base = Uri.base;
+    final isWebOrigin = base.scheme == 'http' || base.scheme == 'https';
+
+    if (isWebOrigin) {
+      return Uri(
+        scheme: base.scheme,
+        host: base.host,
+        port: base.hasPort ? base.port : null,
+        path: '/',
+        queryParameters: const {'auth_callback': 'confirmed'},
+      ).toString();
+    }
+
+    return 'https://avaixa.ai/?auth_callback=confirmed';
+  }
+
   static Future<void> initialize() async {
     if (!isConfigured) return;
 

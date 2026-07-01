@@ -79,6 +79,25 @@ class AvaixaAppShell extends StatefulWidget {
 
 class _AvaixaAppShellState extends State<AvaixaAppShell> {
   bool _localPreviewUnlocked = false;
+  bool _confirmationAcknowledged = false;
+
+  bool get _hasConfirmationCallback {
+    if (_confirmationAcknowledged) return false;
+
+    final queryParams = Uri.base.queryParameters;
+    if (queryParams['auth_callback'] == 'confirmed') return true;
+
+    final fragment = Uri.base.fragment;
+    if (fragment.isEmpty || !fragment.contains('=')) return false;
+
+    try {
+      final fragmentParams = Uri.splitQueryString(fragment);
+      return fragmentParams['type'] == 'signup' ||
+          fragmentParams['type'] == 'email';
+    } catch (_) {
+      return false;
+    }
+  }
 
   Exception _friendlyAuthException(
     Object error, {
@@ -86,6 +105,14 @@ class _AvaixaAppShellState extends State<AvaixaAppShell> {
   }) {
     final raw = error.toString().replaceFirst('Exception: ', '');
     final normalized = raw.toLowerCase();
+
+    if (!signUp &&
+        (normalized.contains('email not confirmed') ||
+            normalized.contains('email_not_confirmed'))) {
+      return Exception(
+        "Confirm your email before signing in. Check your inbox for Avaixa's confirmation message.",
+      );
+    }
 
     if (!signUp &&
         (normalized.contains('invalid login credentials') ||
@@ -165,6 +192,7 @@ class _AvaixaAppShellState extends State<AvaixaAppShell> {
       final response = await client.auth.signUp(
         email: email,
         password: password,
+        emailRedirectTo: SupabaseBootstrap.emailRedirectTo,
         data: {
           "full_name": fullName,
         },
@@ -225,6 +253,17 @@ class _AvaixaAppShellState extends State<AvaixaAppShell> {
         final session = snapshot.data?.session ?? client.auth.currentSession;
         final user = session?.user;
 
+        if (_hasConfirmationCallback && user != null) {
+          return _ConfirmationCompleteScreen(
+            onContinue: () async {
+              setState(() {
+                _confirmationAcknowledged = true;
+              });
+              await client.auth.signOut();
+            },
+          );
+        }
+
         if (user == null) {
           return AuthScreen(
             isSupabaseConfigured: true,
@@ -240,6 +279,140 @@ class _AvaixaAppShellState extends State<AvaixaAppShell> {
           },
         );
       },
+    );
+  }
+}
+
+class _ConfirmationCompleteScreen extends StatefulWidget {
+  const _ConfirmationCompleteScreen({
+    required this.onContinue,
+  });
+
+  final Future<void> Function() onContinue;
+
+  @override
+  State<_ConfirmationCompleteScreen> createState() =>
+      _ConfirmationCompleteScreenState();
+}
+
+class _ConfirmationCompleteScreenState
+    extends State<_ConfirmationCompleteScreen> {
+  bool _continuing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    Future<void>.delayed(const Duration(seconds: 3), _continueToLogin);
+  }
+
+  Future<void> _continueToLogin() async {
+    if (_continuing || !mounted) return;
+    setState(() {
+      _continuing = true;
+    });
+    await widget.onContinue();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF08101F), Color(0xFF122249), Color(0xFF101A36)],
+          ),
+        ),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 540),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Container(
+                padding: const EdgeInsets.all(30),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF111A33).withValues(alpha: 0.96),
+                  borderRadius: BorderRadius.circular(28),
+                  border:
+                      Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x66050A16),
+                      blurRadius: 42,
+                      offset: Offset(0, 28),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.mark_email_read_rounded,
+                      size: 58,
+                      color: Color(0xFF7CC4FF),
+                    ),
+                    const SizedBox(height: 18),
+                    const Text(
+                      "Thank you!",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 34,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.8,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      "Your account has been confirmed. Enjoy using Avaixa :)",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.78),
+                        fontSize: 17,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: _continuing ? null : _continueToLogin,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF62A8FF),
+                          foregroundColor: const Color(0xFF081120),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: _continuing
+                            ? const SizedBox(
+                                height: 20,
+                                width: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.2,
+                                ),
+                              )
+                            : const Text("Continue to sign in"),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      "We'll take you back to login automatically in a moment.",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.56),
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
